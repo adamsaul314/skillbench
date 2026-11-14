@@ -2,8 +2,8 @@
 
 - **slug:** skillbench-core
 - **approval:** approved   <!-- awaiting-approval | approved. Only the user's explicit OK sets "approved". -->
-- **feature_base:**
-- **branch:** feature/skillbench-core (recommended)
+- **feature_base:** b777502f64d0330f568b3d4214a387c58c0c639c
+- **branch:** skillbench-core
 
 ## Goals
 - `skillbench run <test.yaml | dir>` runs one or more YAML-defined skill tests by launching the user's installed agent CLI (Claude Code `claude` or GitHub Copilot `copilot`) headless as a black-box subprocess — no SDKs.
@@ -150,3 +150,4 @@ assert:
 ## Log
 - 2026-11-14 plan written, awaiting approval
 - 2026-11-14 approved; feature_base pending (repo has no commits yet)
+- 2026-11-14 approved at b777502f64d0330f568b3d4214a387c58c0c639c
