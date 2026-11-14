@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,3 +115,11 @@ class FakeTerminal(io.StringIO):
 
 def type_into_terminal(monkeypatch, *lines: str) -> None:
     monkeypatch.setattr(sys, "stdin", FakeTerminal("".join(f"{line}\n" for line in lines)))
+
+
+def assert_loads_nothing_from_the_network(html: str) -> None:
+    """A page that works from disk: a full document with no external resources."""
+    assert html.lstrip().lower().startswith("<!doctype html>")
+    assert not re.search(r"<(script|link|img|iframe)[^>]*(src|href)=", html, re.IGNORECASE)
+    assert "@import" not in html
+    assert not re.search(r"url\(\s*['\"]?https?:", html, re.IGNORECASE)

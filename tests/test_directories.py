@@ -12,6 +12,7 @@ def _run_records() -> list[dict]:
     records = [
         json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         for run_dir in (Path.cwd() / "runs").iterdir()
+        if run_dir.is_dir()
     ]
     return sorted(records, key=lambda record: record["start_time"])
 

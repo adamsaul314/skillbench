@@ -8,6 +8,8 @@ from typing import Any
 from skillbench.answers import AskUser
 from skillbench.answers_file import AnswersNotSavedError, save_answers
 from skillbench.config import ConfigError, load_test
+from skillbench.dashboard import INDEX_FILE_NAME, write_dashboard
+from skillbench.report import format_duration, format_optional
 from skillbench.runner import BackendNotFoundError, RunOptions, run_test
 
 _RUNS_DIR_NAME = "runs"
@@ -16,7 +18,6 @@ _EXIT_OK = 0
 _EXIT_RUN_FAILED = 1
 _EXIT_USAGE_ERROR = 2
 _SUMMARY_HEADER = ("test", "status", "duration", "turns")
-_UNKNOWN_TURNS = "-"
 _COLUMN_GAP = "  "
 _ANSWER_PROMPT = "your answer (empty or /done to finish): "
 _YES_ANSWERS = ("y", "yes")
@@ -30,12 +31,23 @@ def main(argv: list[str] | None = None) -> int:
         "test_path", type=Path, help=f"a test .yaml file, or a directory of {_TEST_FILE_PATTERN}"
     )
     run_parser.add_argument("--model", help="model to use, overriding the test's model:")
+    commands.add_parser(
+        "dashboard", help=f"regenerate {_RUNS_DIR_NAME}/{INDEX_FILE_NAME} without running tests"
+    )
     args = parser.parse_args(argv)
-    return _run_command(args.test_path, args.model)
-
-
-def _run_command(test_path: Path, model_override: str | None) -> int:
     runs_root = Path.cwd() / _RUNS_DIR_NAME
+    if args.command == "dashboard":
+        return _dashboard_command(runs_root)
+    return _run_command(args.test_path, args.model, runs_root)
+
+
+def _dashboard_command(runs_root: Path) -> int:
+    write_dashboard(runs_root)
+    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
+    return _EXIT_OK
+
+
+def _run_command(test_path: Path, model_override: str | None, runs_root: Path) -> int:
     ask_user: AskUser | None = _ask_in_terminal if sys.stdin.isatty() else None
     options = RunOptions(model_override=model_override, ask_user=ask_user)
     try:
@@ -44,6 +56,7 @@ def _run_command(test_path: Path, model_override: str | None) -> int:
         records = []
         for spec in specs:
             record = run_test(spec, runs_root, options)
+            write_dashboard(runs_root)
             print(_format_run_line(record, runs_root))
             if ask_user is not None:
                 _offer_to_save_answers(record)
@@ -52,6 +65,7 @@ def _run_command(test_path: Path, model_override: str | None) -> int:
         print(f"skillbench: {error}", file=sys.stderr)
         return _EXIT_USAGE_ERROR
     print(_format_summary(records))
+    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
     all_passed = all(record["status"] == "pass" for record in records)
     return _EXIT_OK if all_passed else _EXIT_RUN_FAILED
 
@@ -111,10 +125,9 @@ def _format_summary(records: list[dict[str, Any]]) -> str:
 
 
 def _summary_row(record: dict[str, Any]) -> tuple[str, str, str, str]:
-    turns = record["trace"]["num_turns"]
     return (
         record["test_name"],
         record["status"],
-        f"{record['duration_s']:.1f}s",
-        _UNKNOWN_TURNS if turns is None else str(turns),
+        format_duration(record["duration_s"]),
+        format_optional(record["trace"]["num_turns"]),
     )

@@ -1,9 +1,13 @@
 """The per-run report.html: self-contained and showing the whole trace."""
 
-import re
 from pathlib import Path
 
-from conftest import only_run_dir, run_skillbench, write_test_yaml
+from conftest import (
+    assert_loads_nothing_from_the_network,
+    only_run_dir,
+    run_skillbench,
+    write_test_yaml,
+)
 
 
 def _render_report(fake_claude, monkeypatch, stream: str) -> str:
@@ -42,10 +46,7 @@ def test_ac1_7_report_shows_subagent_tool_calls(fake_claude, monkeypatch):
 def test_ac1_7_report_loads_nothing_from_the_network(fake_claude, monkeypatch):
     html = _render_report(fake_claude, monkeypatch, "basic.jsonl")
 
-    assert html.lstrip().lower().startswith("<!doctype html>")
-    assert not re.search(r"<(script|link|img|iframe)[^>]*(src|href)=", html, re.IGNORECASE)
-    assert "@import" not in html
-    assert not re.search(r"url\(\s*['\"]?https?:", html, re.IGNORECASE)
+    assert_loads_nothing_from_the_network(html)
 
 
 def test_ac3_1_report_shows_each_user_answer_between_turns(fake_claude, monkeypatch):

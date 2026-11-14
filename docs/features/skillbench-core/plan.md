@@ -109,8 +109,8 @@ assert:
   - AC3.6 `max_turns` limits total conversation turns across answers; exceeding it stops the conversation and the `max_turns` assertion (if present) fails.
 
 ### slice-4: dashboard
-- **status:** todo
-- **base:**
+- **status:** done
+- **base:** d2ab2c652c5e9195e4565894ce3abc5b3bbc88a6
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC4.1 After any run, `runs/index.html` is regenerated and lists every run found under `runs/` (newest first) with: date, test name, backend, model, status, duration, turns, cost/usage.
@@ -157,3 +157,5 @@ assert:
 - 2026-11-14 slice-2 done (fix_rounds=0)
 - 2026-11-14 slice-3 started at 25a3a2e95d92492684303ecfb24ad02074a580cb
 - 2026-11-14 slice-3 done (fix_rounds=0)
+- 2026-11-14 slice-4 started at d2ab2c652c5e9195e4565894ce3abc5b3bbc88a6
+- 2026-11-14 slice-4 done (fix_rounds=0)

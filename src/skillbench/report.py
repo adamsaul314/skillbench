@@ -1,10 +1,18 @@
-"""Rendering a run record as a self-contained HTML report (no network, no scripts)."""
+"""Rendering a run record as self-contained HTML (no network, no scripts).
+
+`render_run_detail` is the part shared by the per-run report.html and the runs dashboard.
+"""
 
 import json
 from html import escape
 from typing import Any
 
-_STYLE = """
+# Longer texts show this many characters, with the full text behind a collapsed <details>,
+# so a run with megabytes of tool output still renders quickly.
+_PREVIEW_CHARS = 2000
+_UNKNOWN_VALUE = "-"
+
+PAGE_STYLE = """
 body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 70rem; color: #1a1a1a;
        background: #fafafa; }
 h1 { font-size: 1.4rem; }
@@ -19,6 +27,8 @@ summary { cursor: pointer; font-family: monospace; }
 .error { color: #b00; }
 .children { margin-left: 1.5rem; border-left: 2px dashed #bbb; padding-left: .8rem; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f3f3f3; padding: .4rem; }
+.assertions .pass { color: #262; }
+.assertions .fail { color: #b00; }
 """
 
 _SUMMARY_FIELDS = (
@@ -37,18 +47,33 @@ _SUMMARY_FIELDS = (
 
 
 def render_report(record: dict[str, Any]) -> str:
-    trace = record["trace"]
     title = escape(f"skillbench: {record['test_name']}")
     return (
         "<!doctype html>\n"
         f'<html lang="en"><head><meta charset="utf-8"><title>{title}</title>'
-        f"<style>{_STYLE}</style></head><body>"
+        f"<style>{PAGE_STYLE}</style></head><body>"
         f"<h1>{title}</h1>"
-        f"{_render_summary(record)}"
-        "<h2>Timeline</h2>"
-        f"{_render_items(trace['items'])}"
+        f"{render_run_detail(record)}"
         "</body></html>\n"
     )
+
+
+def render_run_detail(record: dict[str, Any]) -> str:
+    """Summary, assertion results and the full timeline of one run."""
+    return (
+        f"{_render_summary(record)}"
+        f"{_render_assertions(record['assertions'])}"
+        "<h3>Timeline</h3>"
+        f"{_render_items(record['trace']['items'])}"
+    )
+
+
+def format_duration(duration_s: float) -> str:
+    return f"{duration_s:.1f}s"
+
+
+def format_optional(value: Any) -> str:
+    return _UNKNOWN_VALUE if value is None else str(value)
 
 
 def _render_summary(record: dict[str, Any]) -> str:
@@ -63,6 +88,22 @@ def _render_summary(record: dict[str, Any]) -> str:
     ]
     cells = "".join(f"<dt>{escape(key)}</dt><dd>{escape(str(value))}</dd>" for key, value in rows)
     return f"<dl>{cells}</dl>"
+
+
+def _render_assertions(results: list[dict[str, Any]]) -> str:
+    if not results:
+        return ""
+    entries = "".join(_render_assertion(result) for result in results)
+    return f'<h3>Assertions</h3><ul class="assertions">{entries}</ul>'
+
+
+def _render_assertion(result: dict[str, Any]) -> str:
+    outcome = "pass" if result["passed"] else "fail"
+    expected = json.dumps(result["expected"])
+    return (
+        f'<li class="{outcome}"><strong>{outcome}</strong> '
+        f"{escape(result['type'])}: {escape(expected)} &mdash; {escape(result['reason'])}</li>"
+    )
 
 
 def _render_items(items: list[dict[str, Any]]) -> str:
@@ -91,8 +132,18 @@ def _render_tool_call(tool_call: dict[str, Any]) -> str:
         "<details open>"
         f'<summary>{escape(tool_call["name"])} <span class="{outcome_class}">[{outcome}]</span>'
         "</summary>"
-        f"<h4>input</h4><pre>{escape(json.dumps(tool_call['input'], indent=2))}</pre>"
-        f"<h4>output</h4><pre>{escape(output)}</pre>"
+        f"<h4>input</h4>{_render_long_text(json.dumps(tool_call['input'], indent=2))}"
+        f"<h4>output</h4>{_render_long_text(output)}"
         f"{children_html}"
         "</details>"
+    )
+
+
+def _render_long_text(text: str) -> str:
+    if len(text) <= _PREVIEW_CHARS:
+        return f"<pre>{escape(text)}</pre>"
+    return (
+        f"<pre>{escape(text[:_PREVIEW_CHARS])}&hellip;</pre>"
+        f"<details><summary>show all {len(text):,} characters</summary>"
+        f"<pre>{escape(text)}</pre></details>"
     )
