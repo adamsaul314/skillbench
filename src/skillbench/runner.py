@@ -1,9 +1,8 @@
-"""Running one test on the Claude backend and recording everything under runs/<run-id>/."""
+"""Running one test on one backend and recording everything under runs/<run-id>/."""
 
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import time
@@ -16,28 +15,23 @@ from typing import Any
 
 from skillbench.answers import AnswerSource, AskUser, LiveAnswerUnavailableError
 from skillbench.assertions import AssertionResult, RunFacts, evaluate_assertions
-from skillbench.claude_command import build_session_args, build_turn_args
-from skillbench.claude_trace import ClaudeRunInfo, parse_claude_stream
+from skillbench.backends import InstalledBackend
 from skillbench.config import TestSpec
 from skillbench.report import render_report
-from skillbench.trace import TurnTrace, UserMessage, final_text, merge_turn_traces
+from skillbench.trace import TurnInfo, TurnTrace, UserMessage, final_text, merge_turn_traces
 from skillbench.workspace import create_workspace
 
-_CLAUDE_EXECUTABLE = "claude"
-_API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 _RUN_ID_SUFFIX_LENGTH = 6
 _DURATION_DECIMALS = 3
 _IS_WINDOWS = os.name == "nt"
-
-
-class BackendNotFoundError(Exception):
-    """The agent CLI is not on PATH."""
 
 
 @dataclass(frozen=True)
 class RunOptions:
     """Choices made per invocation rather than in the test file."""
 
+    installed: InstalledBackend
+    eval_id: str  # shared by every run of one `skillbench run` invocation
     model_override: str | None = None
     ask_user: AskUser | None = None  # None when there is no terminal to ask live answers in
 
@@ -61,7 +55,7 @@ class _ProcessOutcome:
 class _Turn:
     user_message: UserMessage | None  # None for the first turn, which sends the test prompt
     outcome: _ProcessOutcome
-    info: ClaudeRunInfo
+    info: TurnInfo
 
 
 class _StopReason(StrEnum):
@@ -82,48 +76,54 @@ class _Stop:
 
 @dataclass
 class _Conversation:
+    assigned_session_id: str | None
     turns: list[_Turn] = field(default_factory=list)
     stop: _Stop = _Stop(_StopReason.NO_MORE_ANSWERS)
 
     @property
     def session_id(self) -> str | None:
         reported = [turn.info.session_id for turn in self.turns if turn.info.session_id]
-        return reported[-1] if reported else None
+        return reported[-1] if reported else self.assigned_session_id
 
 
 @dataclass(frozen=True)
 class _TurnLauncher:
-    """Launches the turns of one run: same executable, flags and workspace each time."""
+    """Launches the turns of one run: same CLI, flags and workspace each time."""
 
-    executable: str
+    installed: InstalledBackend
     session_args: list[str]
     workspace: Path
     raw_dir: Path
     timeout_s: float
+    assigned_session_id: str | None  # set when skillbench, not the CLI, names the session
 
     def run_turn(
         self, turn_number: int, message: str, resume_session_id: str | None
-    ) -> tuple[_ProcessOutcome, ClaudeRunInfo]:
+    ) -> tuple[_ProcessOutcome, TurnInfo]:
+        backend = self.installed.backend
         stdout_path = self.raw_dir / f"{turn_number}.jsonl"
-        turn_args = build_turn_args(message, resume_session_id)
-        command = [self.executable, *turn_args, *self.session_args]
+        turn_args = backend.turn_args(message, resume_session_id)
+        command = [self.installed.executable, *turn_args, *self.session_args]
         outcome = _run_process(command, self.workspace, stdout_path, self.timeout_s)
-        return outcome, parse_claude_stream(stdout_path.read_bytes())
+        return outcome, backend.parse_stream(stdout_path.read_bytes())
 
 
 def run_test(spec: TestSpec, runs_root: Path, options: RunOptions) -> dict[str, Any]:
-    """Run `spec` on Claude as a conversation (the prompt, then each answer as a resumed turn),
-    check its assertions, write run.json, raw output and report.html; return the record."""
+    """Run `spec` on the chosen backend as a conversation (the prompt, then each answer as a
+    follow-up turn in the same session), check its assertions, write run.json, raw output and
+    report.html; return the record."""
+    backend = options.installed.backend
     model = options.model_override or spec.model
-    has_api_key = bool(os.environ.get(_API_KEY_ENV_VAR))
     run_dir = runs_root / _new_run_id(spec.name)
     launcher = _TurnLauncher(
-        executable=_find_claude(),
-        session_args=build_session_args(spec, model, has_api_key),
+        installed=options.installed,
+        session_args=backend.session_args(spec, model),
         workspace=create_workspace(spec.fixture),
         raw_dir=run_dir / "raw",
         timeout_s=spec.timeout_s,
+        assigned_session_id=str(uuid.uuid4()) if backend.assigns_session_id else None,
     )
+    backend.prepare_workspace(spec, launcher.workspace)
     launcher.raw_dir.mkdir(parents=True)
     answers = AnswerSource(spec.answers, spec.is_interactive, options.ask_user)
 
@@ -131,6 +131,8 @@ def run_test(spec: TestSpec, runs_root: Path, options: RunOptions) -> dict[str, 
 
     record = {
         "run_id": run_dir.name,
+        "eval_id": options.eval_id,
+        "backend": backend.name,
         **_build_record(spec, model, launcher.workspace, conversation),
     }
     _write_run_files(run_dir, record)
@@ -139,7 +141,7 @@ def run_test(spec: TestSpec, runs_root: Path, options: RunOptions) -> dict[str, 
 
 def _converse(launcher: _TurnLauncher, spec: TestSpec, answers: AnswerSource) -> _Conversation:
     """Send turns until the answers run out, a turn fails, or max_turns is reached."""
-    conversation = _Conversation()
+    conversation = _Conversation(launcher.assigned_session_id)
     user_message: UserMessage | None = None
     while True:
         message = spec.prompt if user_message is None else user_message.text
@@ -200,7 +202,6 @@ def _build_record(
     return {
         "test_name": spec.name,
         "test_file": str(spec.source_path),
-        "backend": "claude",
         "model": model or first_turn.info.reported_model,
         "start_time": first_turn.outcome.start_time.isoformat(),
         "end_time": last_turn.outcome.end_time.isoformat(),
@@ -229,13 +230,6 @@ def _test_status(
     if run_status != "completed" or conversation_error is not None:
         return "error"
     return "pass" if all(result.passed for result in assertion_results) else "fail"
-
-
-def _find_claude() -> str:
-    executable = shutil.which(_CLAUDE_EXECUTABLE)
-    if executable is None:
-        raise BackendNotFoundError(f"'{_CLAUDE_EXECUTABLE}' was not found on PATH")
-    return executable
 
 
 def _new_run_id(test_name: str) -> str:

@@ -1,4 +1,5 @@
-"""Shared fixtures: a fake `claude` on PATH and helpers to write tests and read runs."""
+"""Shared fixtures: fake `claude`/`copilot` CLIs on PATH, and helpers to write tests and read
+runs."""
 
 import io
 import json
@@ -15,12 +16,21 @@ from skillbench.cli import main
 
 TESTS_DIR = Path(__file__).parent
 STREAMS_DIR = TESTS_DIR / "streams"
-FAKE_CLAUDE_SCRIPT = TESTS_DIR / "fakes" / "fake_claude.py"
+FAKE_AGENT_SCRIPT = TESTS_DIR / "fakes" / "fake_agent.py"
+_AGENT_NAMES = ("claude", "copilot")
+_DEFAULT_STREAMS = {"claude": "basic.jsonl", "copilot": "copilot_basic.jsonl"}
 
 
 @dataclass
-class FakeClaude:
+class FakeAgent:
+    """One fake agent CLI on PATH; see fakes/fake_agent.py for what it does."""
+
+    name: str
     record_path: Path
+
+    @property
+    def env_prefix(self) -> str:
+        return f"FAKE_{self.name.upper()}_"
 
     def use_stream(self, monkeypatch, stream_name: str) -> Path:
         [stream_path] = self.use_streams(monkeypatch, stream_name)
@@ -29,8 +39,12 @@ class FakeClaude:
     def use_streams(self, monkeypatch, *stream_names: str) -> list[Path]:
         """Invocation N replays stream N; the last stream repeats for later invocations."""
         stream_paths = [STREAMS_DIR / name for name in stream_names]
-        monkeypatch.setenv("FAKE_CLAUDE_STREAM", os.pathsep.join(map(str, stream_paths)))
+        monkeypatch.setenv(self.env_prefix + "STREAM", os.pathsep.join(map(str, stream_paths)))
         return stream_paths
+
+    def break_install(self, monkeypatch) -> None:
+        """Leave the executable on PATH but make it fail, even on --version."""
+        monkeypatch.setenv(self.env_prefix + "BROKEN", "1")
 
     @property
     def was_launched(self) -> bool:
@@ -54,32 +68,64 @@ class FakeClaude:
         return Path(self.invocations[0]["cwd"])
 
 
-def _install_fake_executable(bin_dir: Path) -> None:
-    bin_dir.mkdir()
+@dataclass
+class FakeAgents:
+    claude: FakeAgent
+    copilot: FakeAgent
+
+
+def _install_fake_executable(bin_dir: Path, agent_name: str) -> None:
     if os.name == "nt":
-        launcher = bin_dir / "claude.cmd"
-        launcher.write_text(f'@"{sys.executable}" "{FAKE_CLAUDE_SCRIPT}" %*\r\n', encoding="utf-8")
+        launcher = bin_dir / f"{agent_name}.cmd"
+        launcher.write_text(
+            f'@"{sys.executable}" "{FAKE_AGENT_SCRIPT}" {agent_name} %*\r\n', encoding="utf-8"
+        )
     else:
-        launcher = bin_dir / "claude"
-        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_CLAUDE_SCRIPT}" "$@"\n')
+        launcher = bin_dir / agent_name
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_AGENT_SCRIPT}" {agent_name} "$@"\n'
+        )
         launcher.chmod(0o755)
 
 
+def _install_fake_agent(tmp_path: Path, bin_dir: Path, monkeypatch, name: str) -> FakeAgent:
+    _install_fake_executable(bin_dir, name)
+    agent = FakeAgent(name=name, record_path=tmp_path / f"fake-{name}-invocations.jsonl")
+    monkeypatch.setenv(agent.env_prefix + "RECORD", str(agent.record_path))
+    monkeypatch.setenv(agent.env_prefix + "STREAM", str(STREAMS_DIR / _DEFAULT_STREAMS[name]))
+    for setting in ("SLEEP_S", "EXIT", "BROKEN"):
+        monkeypatch.delenv(agent.env_prefix + setting, raising=False)
+    return agent
+
+
 @pytest.fixture
-def fake_claude(tmp_path, monkeypatch) -> FakeClaude:
+def fake_agents(tmp_path, monkeypatch) -> FakeAgents:
+    """Both a fake `claude` and a fake `copilot` on PATH, both runnable."""
     bin_dir = tmp_path / "fake-bin"
-    _install_fake_executable(bin_dir)
+    bin_dir.mkdir()
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
-    record_path = tmp_path / "fake-claude-invocations.jsonl"
-    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record_path))
-    monkeypatch.setenv("FAKE_CLAUDE_STREAM", str(STREAMS_DIR / "basic.jsonl"))
-    monkeypatch.delenv("FAKE_CLAUDE_SLEEP_S", raising=False)
-    monkeypatch.delenv("FAKE_CLAUDE_EXIT", raising=False)
+    agents = {
+        name: _install_fake_agent(tmp_path, bin_dir, monkeypatch, name) for name in _AGENT_NAMES
+    }
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
-    return FakeClaude(record_path=record_path)
+    return FakeAgents(**agents)
+
+
+@pytest.fixture
+def fake_claude(fake_agents, monkeypatch) -> FakeAgent:
+    """Only `claude` is usable: the copilot on PATH is a broken install."""
+    fake_agents.copilot.break_install(monkeypatch)
+    return fake_agents.claude
+
+
+@pytest.fixture
+def fake_copilot(fake_agents, monkeypatch) -> FakeAgent:
+    """Only `copilot` is usable: the claude on PATH is a broken install."""
+    fake_agents.claude.break_install(monkeypatch)
+    return fake_agents.copilot
 
 
 def write_test_yaml(directory: Path, spec: dict, file_name: str = "test.yaml") -> Path:

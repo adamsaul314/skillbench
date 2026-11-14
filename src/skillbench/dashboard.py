@@ -40,6 +40,9 @@ class _RunView:
     """One run as the dashboard shows it: a table row and a detail section."""
 
     sort_time: datetime
+    # Runs of one test in one eval (the same test on several backends) share a group.
+    group: str
+    backend: str
     row_html: str
     detail_html: str
 
@@ -48,8 +51,17 @@ def write_dashboard(runs_root: Path) -> None:
     """(Re)write runs_root/index.html from every run directory found under runs_root."""
     runs_root.mkdir(parents=True, exist_ok=True)
     run_dirs = [entry for entry in runs_root.iterdir() if entry.is_dir()]
-    views = sorted(map(_view_run, run_dirs), key=lambda view: view.sort_time, reverse=True)
+    views = _newest_first_by_group([_view_run(run_dir) for run_dir in run_dirs])
     (runs_root / INDEX_FILE_NAME).write_text(_render_page(views), encoding="utf-8")
+
+
+def _newest_first_by_group(views: list[_RunView]) -> list[_RunView]:
+    """Groups ordered by their newest run, newest first; within a group, by backend name."""
+    group_times: dict[str, datetime] = {}
+    for view in views:
+        group_times[view.group] = max(view.sort_time, group_times.get(view.group, view.sort_time))
+    by_backend = sorted(views, key=lambda view: view.backend)
+    return sorted(by_backend, key=lambda view: (group_times[view.group], view.group), reverse=True)
 
 
 def _view_run(run_dir: Path) -> _RunView:
@@ -91,7 +103,14 @@ def _render_run(run_id: str, record: dict[str, Any]) -> _RunView:
         raise _BrokenRunError(
             f"{run_id}/{_RUN_RECORD_FILE_NAME} is malformed: {error!r}"
         ) from error
-    return _RunView(sort_time=start_time, row_html=_row(cells), detail_html=detail)
+    eval_id = record.get("eval_id")  # absent in runs recorded before evals existed
+    return _RunView(
+        sort_time=start_time,
+        group=f"{eval_id}/{record['test_name']}" if eval_id else run_id,
+        backend=record["backend"],
+        row_html=_row(cells),
+        detail_html=detail,
+    )
 
 
 def _render_broken_run(run_dir: Path, error: str) -> _RunView:
@@ -107,7 +126,13 @@ def _render_broken_run(run_dir: Path, error: str) -> _RunView:
         "",
     )
     detail = _detail_section(run_dir.name, run_dir.name, f'<p class="error">{escape(error)}</p>')
-    return _RunView(sort_time=modified, row_html=_row(cells), detail_html=detail)
+    return _RunView(
+        sort_time=modified,
+        group=run_dir.name,
+        backend="",
+        row_html=_row(cells),
+        detail_html=detail,
+    )
 
 
 def _cost_and_usage(trace: dict[str, Any]) -> str:
@@ -115,6 +140,9 @@ def _cost_and_usage(trace: dict[str, Any]) -> str:
     parts = []
     if trace["cost_usd"] is not None:
         parts.append(f"${trace['cost_usd']:.{_COST_DECIMALS}f}")
+    # Absent in runs recorded before the Copilot backend existed.
+    if trace.get("premium_requests") is not None:
+        parts.append(f"{trace['premium_requests']} premium requests")
     if "input_tokens" in usage or "output_tokens" in usage:
         input_tokens = format_optional(usage.get("input_tokens"))
         output_tokens = format_optional(usage.get("output_tokens"))

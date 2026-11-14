@@ -1,12 +1,84 @@
-"""Backend-agnostic parts of the trace model (see claude_trace for the item shapes).
+"""The backend-agnostic trace model each backend's event stream is normalized into.
+
+A trace is plain JSON data:
+    {"items": [...], "usage": {...}, "cost_usd": float | None,
+     "premium_requests": int | None, "num_turns": int | None}
+`cost_usd` is what Claude reports; `premium_requests` is what Copilot bills in instead.
+Each item is one of
+    {"kind": "assistant_text", "text": str}
+    {"kind": "tool_call", "id", "name", "input", "output", "ok", "children": [items]}
+    {"kind": "unknown", "raw_type": str}
+Items emitted inside a subagent go into the `children` of the tool call that spawned it.
 
 A multi-turn run's trace is the turns' traces joined in order, each turn after the first
 preceded by the user message that started it:
     {"kind": "user_message", "turn": int, "text": str, "source": "scripted" | "live"}
 """
 
-from dataclasses import dataclass
-from typing import Any
+import json
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+UNPARSEABLE_LINE = "unparseable"
+
+
+@dataclass
+class TurnInfo:
+    """Everything recovered from one turn's event stream."""
+
+    trace: dict[str, Any]
+    session_id: str | None = None
+    reported_model: str | None = None
+    plugins: list[Any] = field(default_factory=list)
+    skills: list[Any] = field(default_factory=list)
+
+
+def empty_trace() -> dict[str, Any]:
+    return {"items": [], "usage": {}, "cost_usd": None, "premium_requests": None, "num_turns": None}
+
+
+def new_tool_call(call_id: str, name: str, tool_input: Any) -> dict[str, Any]:
+    """A tool call item whose result has not arrived yet."""
+    return {
+        "kind": "tool_call",
+        "id": call_id,
+        "name": name,
+        "input": tool_input,
+        "output": None,
+        "ok": None,
+        "children": [],
+    }
+
+
+def unknown_item(raw_type: str) -> dict[str, Any]:
+    return {"kind": "unknown", "raw_type": raw_type}
+
+
+class StreamTraceBuilder(Protocol):
+    """Turns one backend's events into a TurnInfo."""
+
+    info: TurnInfo
+
+    def add_event(self, event: dict[str, Any]) -> None: ...
+
+    def add_unparseable_line(self) -> None: ...
+
+
+def build_turn_info(raw_stdout: bytes, builder: StreamTraceBuilder) -> TurnInfo:
+    """Feed every line of a JSON-lines stream to `builder`. Never raises on odd input: a line
+    that isn't a JSON object is reported as unparseable."""
+    for line in raw_stdout.decode("utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            event = None
+        if isinstance(event, dict):
+            builder.add_event(event)
+        else:
+            builder.add_unparseable_line()
+    return builder.info
 
 
 @dataclass(frozen=True)
@@ -50,6 +122,7 @@ def merge_turn_traces(turns: list[TurnTrace]) -> dict[str, Any]:
         "items": items,
         "usage": _sum_usage([trace["usage"] for trace in traces]),
         "cost_usd": _sum_known([trace["cost_usd"] for trace in traces]),
+        "premium_requests": _sum_known([trace["premium_requests"] for trace in traces]),
         "num_turns": _sum_known([trace["num_turns"] for trace in traces]),
     }
 

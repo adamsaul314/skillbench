@@ -1,0 +1,20 @@
+{"type":"session.start","id":"ev-1","timestamp":"2026-11-14T10:00:00.000Z","data":{"sessionId":"cop-sess-1","selectedModel":"gpt-5","copilotVersion":"1.0.0"}}
+{"type":"assistant.message","id":"ev-2","timestamp":"2026-11-14T10:00:01.000Z","data":{"messageId":"m1","content":"Let me look at the repo.","toolRequests":[{"toolCallId":"call_ls","name":"bash","arguments":{"command":"ls"}}]}}
+{"type":"tool.execution_start","id":"ev-3","timestamp":"2026-11-14T10:00:01.100Z","data":{"toolCallId":"call_ls","toolName":"bash","arguments":{"command":"ls"}}}
+{"type":"tool.execution_complete","id":"ev-4","timestamp":"2026-11-14T10:00:01.200Z","data":{"toolCallId":"call_ls","success":true,"result":{"content":"README.md\n"}}}
+{"type":"assistant.usage","id":"ev-5","timestamp":"2026-11-14T10:00:01.300Z","data":{"model":"gpt-5","inputTokens":100,"outputTokens":20}}
+{"type":"assistant.message","id":"ev-6","timestamp":"2026-11-14T10:00:02.000Z","data":{"messageId":"m2","content":"","toolRequests":[{"toolCallId":"call_task","name":"task","arguments":{"prompt":"review a.py"}}]}}
+{"type":"tool.execution_start","id":"ev-7","timestamp":"2026-11-14T10:00:02.100Z","data":{"toolCallId":"call_task","toolName":"task","arguments":{"prompt":"review a.py"}}}
+{"type":"subagent.started","id":"ev-8","timestamp":"2026-11-14T10:00:02.200Z","data":{"toolCallId":"call_task","agentName":"reviewer","agentDisplayName":"Reviewer"}}
+{"type":"tool.execution_start","id":"ev-9","timestamp":"2026-11-14T10:00:02.300Z","data":{"toolCallId":"call_view","toolName":"view","arguments":{"path":"a.py"},"parentToolCallId":"call_task"}}
+{"type":"tool.execution_complete","id":"ev-10","timestamp":"2026-11-14T10:00:02.400Z","data":{"toolCallId":"call_view","success":false,"error":{"message":"Path does not exist: a.py"},"parentToolCallId":"call_task"}}
+{"type":"assistant.message","id":"ev-11","timestamp":"2026-11-14T10:00:02.500Z","data":{"messageId":"m3","content":"a.py is missing.","parentToolCallId":"call_task"}}
+{"type":"subagent.completed","id":"ev-12","timestamp":"2026-11-14T10:00:02.600Z","data":{"toolCallId":"call_task","agentName":"reviewer"}}
+{"type":"tool.execution_complete","id":"ev-13","timestamp":"2026-11-14T10:00:02.700Z","data":{"toolCallId":"call_task","success":true,"result":{"content":"a.py is missing."}}}
+{"type":"tool.execution_start","id":"ev-14","timestamp":"2026-11-14T10:00:03.000Z","data":{"toolCallId":"call_skill","toolName":"skill","arguments":{"skill":"overpowered:grilling"}}}
+{"type":"tool.execution_complete","id":"ev-15","timestamp":"2026-11-14T10:00:03.100Z","data":{"toolCallId":"call_skill","success":true,"result":{"content":"Skill loaded."}}}
+{"type":"session.info","id":"ev-16","timestamp":"2026-11-14T10:00:03.200Z","data":{"message":"something new"}}
+{"type":"assistant.usage","id":"ev-17","timestamp":"2026-11-14T10:00:03.300Z","data":{"model":"gpt-5","inputTokens":150,"outputTokens":30}}
+{"type":"assistant.message","id":"ev-18","timestamp":"2026-11-14T10:00:04.000Z","data":{"messageId":"m4","content":"Q1: What is the app for?"}}
+{"type":"session.shutdown","id":"ev-19","timestamp":"2026-11-14T10:00:04.100Z","data":{"totalPremiumRequests":2,"totalApiDurationMs":4000}}
+not json at all

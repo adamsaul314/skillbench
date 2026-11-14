@@ -10,7 +10,10 @@ import yaml
 from skillbench.assertions import Assertion, InvalidAssertionError, parse_assertion
 
 _DEFAULT_TIMEOUT_S = 600
+_PLUGIN_MANIFEST = ".claude-plugin/plugin.json"
 _ISOLATION_MODES = ("clean", "none")
+# The agent CLIs skillbench can drive, primary first: the one used when only one is chosen.
+BACKEND_NAMES = ("claude", "copilot")
 
 
 class ConfigError(Exception):
@@ -19,7 +22,7 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class TestSpec:
-    """A validated test. Keys later slices act on (backends) are validated only."""
+    """A validated test."""
 
     source_path: Path
     name: str
@@ -35,6 +38,15 @@ class TestSpec:
     is_interactive: bool = False
     max_turns: int | None = None  # limit on conversation turns (the prompt plus each answer)
     assertions: list[Assertion] = field(default_factory=list)
+    backends: list[str] = field(default_factory=lambda: list(BACKEND_NAMES))
+
+    def runs_on(self, backend_name: str) -> bool:
+        return backend_name in self.backends
+
+    @property
+    def is_skill_dir_a_plugin(self) -> bool:
+        """A plugin (it has a manifest) rather than a plain skill folder."""
+        return self.skill_dir is not None and (self.skill_dir / _PLUGIN_MANIFEST).is_file()
 
 
 def _is_string(value: Any) -> bool:
@@ -61,6 +73,10 @@ def _is_isolation_mode(value: Any) -> bool:
     return value in _ISOLATION_MODES
 
 
+def _is_backend_list(value: Any) -> bool:
+    return _is_string_list(value) and all(name in BACKEND_NAMES for name in value)
+
+
 def _is_list(value: Any) -> bool:
     return isinstance(value, list)
 
@@ -72,7 +88,7 @@ _FIELD_RULES: dict[str, tuple[Callable[[Any], bool], str]] = {
     "skill_dir": (_is_string, "a path string"),
     "fixture": (_is_string, "a path string"),
     "model": (_is_string, "a string"),
-    "backends": (_is_string_list, "a list of strings"),
+    "backends": (_is_backend_list, f"a list of backend names ({', '.join(BACKEND_NAMES)})"),
     "answers": (_is_string_list, "a list of strings"),
     "interactive": (_is_bool, "true or false"),
     "max_turns": (_is_positive_int, "a positive integer"),
@@ -106,6 +122,7 @@ def load_test(test_path: Path) -> TestSpec:
         is_interactive=raw.get("interactive", False),
         max_turns=raw.get("max_turns"),
         assertions=_parse_assertions(test_path, raw.get("assert", [])),
+        backends=raw.get("backends", list(BACKEND_NAMES)),
     )
 
 

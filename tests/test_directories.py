@@ -56,12 +56,12 @@ def test_ac2_4_prints_a_summary_table_with_status_duration_and_turns(fake_claude
 
     lines = capsys.readouterr().out.splitlines()
     header_index = next(i for i, line in enumerate(lines) if line.split()[:1] == ["test"])
-    assert lines[header_index].split() == ["test", "status", "duration", "turns"]
+    assert lines[header_index].split() == ["test", "backend", "status", "duration", "turns"]
     alpha_row, bravo_row = (line.split() for line in lines[header_index + 1 : header_index + 3])
     durations = {record["test_name"]: record["duration_s"] for record in _run_records()}
     # basic.jsonl reports 3 turns
-    assert alpha_row == ["alpha", "pass", f"{durations['alpha']:.1f}s", "3"]
-    assert bravo_row == ["bravo", "fail", f"{durations['bravo']:.1f}s", "3"]
+    assert alpha_row == ["alpha", "claude", "pass", f"{durations['alpha']:.1f}s", "3"]
+    assert bravo_row == ["bravo", "claude", "fail", f"{durations['bravo']:.1f}s", "3"]
 
 
 def test_ac2_5_exit_code_is_0_when_every_test_passes(fake_claude):

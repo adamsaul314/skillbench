@@ -33,6 +33,7 @@ pre { white-space: pre-wrap; word-break: break-word; background: #f3f3f3; paddin
 
 _SUMMARY_FIELDS = (
     "test_name",
+    "eval_id",
     "backend",
     "model",
     "status",
@@ -81,6 +82,7 @@ def _render_summary(record: dict[str, Any]) -> str:
     rows = [(key, record.get(key)) for key in _SUMMARY_FIELDS]
     rows += [
         ("cost_usd", trace.get("cost_usd")),
+        ("premium_requests", trace.get("premium_requests")),
         ("num_turns", trace.get("num_turns")),
         ("usage", json.dumps(trace.get("usage"))),
         ("plugins", json.dumps(record.get("plugins"))),

@@ -4,7 +4,6 @@ import json
 
 from skillbench.config import TestSpec
 
-_PLUGIN_MANIFEST = ".claude-plugin/plugin.json"
 # Asking the user mid-turn would block a headless run; skillbench answers between turns instead.
 _ALWAYS_DENIED_TOOLS = ("AskUserQuestion",)
 _EMPTY_MCP_CONFIG = json.dumps({"mcpServers": {}})
@@ -59,6 +58,6 @@ def _isolation_args(isolation: str, has_api_key: bool) -> list[str]:
 def _skill_dir_args(spec: TestSpec) -> list[str]:
     if spec.skill_dir is None:
         return []
-    if (spec.skill_dir / _PLUGIN_MANIFEST).is_file():
+    if spec.is_skill_dir_a_plugin:
         return ["--plugin-dir", str(spec.skill_dir)]
     return ["--add-dir", str(spec.skill_dir)]

@@ -18,6 +18,7 @@ from conftest import run_skillbench, write_test_yaml
         ({"name": "bad-iso", "prompt": "/x", "isolation": "strict"}, "isolation"),
         ({"name": "no-dir", "prompt": "/x", "skill_dir": "nowhere"}, "skill_dir"),
         ({"name": "no-fixture", "prompt": "/x", "fixture": "nowhere"}, "fixture"),
+        ({"name": "bad-backend", "prompt": "/x", "backends": ["gpt"]}, "backends"),
     ],
 )
 def test_ac1_8_invalid_yaml_names_file_and_field_and_launches_nothing(

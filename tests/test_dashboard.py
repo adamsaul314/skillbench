@@ -191,6 +191,38 @@ def test_ac4_1_runs_are_listed_newest_first_by_start_time(fake_claude, monkeypat
     assert rows[0]["date"].startswith("2026-01-03")
 
 
+def _rewrite_record(record: dict, **fields) -> None:
+    run_json = Path.cwd() / "runs" / record["run_id"] / "run.json"
+    run_json.write_text(json.dumps({**record, **fields}), encoding="utf-8")
+
+
+def test_ac5_6_runs_of_one_eval_and_test_are_adjacent_and_labelled_by_backend(
+    fake_claude, monkeypatch
+):
+    # Interleaved in time with another run, the two backends of one eval still sit together.
+    on_claude = _run(fake_claude, monkeypatch, "a")
+    unrelated = _run(fake_claude, monkeypatch, "b")
+    on_copilot = _run(fake_claude, monkeypatch, "c")
+    _rewrite_record(on_claude, test_name="pair", eval_id="e1", start_time="2026-01-01T12:00:00")
+    _rewrite_record(unrelated, test_name="other", eval_id="e2", start_time="2026-01-02T12:00:00")
+    _rewrite_record(
+        on_copilot,
+        test_name="pair",
+        eval_id="e1",
+        backend="copilot",
+        start_time="2026-01-03T12:00:00",
+    )
+
+    main(["dashboard"])
+
+    rows = _runs_table(_dashboard_html())
+    assert [(row["test"], row["backend"]) for row in rows] == [
+        ("pair", "claude"),
+        ("pair", "copilot"),
+        ("other", "claude"),
+    ]
+
+
 def test_ac4_2_selecting_a_run_shows_its_full_timeline(fake_claude, monkeypatch):
     _run(
         fake_claude,

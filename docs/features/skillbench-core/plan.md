@@ -122,8 +122,8 @@ assert:
 - **Notes:** This may supersede the per-run `report.html` from slice-1 (keep it, or make it a link into the dashboard — decide in build).
 
 ### slice-5: Copilot backend + multi-backend prompt
-- **status:** todo
-- **base:**
+- **status:** done
+- **base:** bef95134e7c6d2ec138a69d06b8ab00e8b568174
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC5.1 Given `--backend copilot`, skillbench launches `copilot -p` with `--output-format json`, `--allow-all`, `--no-ask-user`, `--no-custom-instructions` (when isolation is clean), `--model` per AC1.3, and the skill made visible to it; follow-up turns use `--session-id <uuid>`.
@@ -159,3 +159,5 @@ assert:
 - 2026-11-14 slice-3 done (fix_rounds=0)
 - 2026-11-14 slice-4 started at d2ab2c652c5e9195e4565894ce3abc5b3bbc88a6
 - 2026-11-14 slice-4 done (fix_rounds=0)
+- 2026-11-14 slice-5 started at bef95134e7c6d2ec138a69d06b8ab00e8b568174
+- 2026-11-14 slice-5 done (fix_rounds=0)

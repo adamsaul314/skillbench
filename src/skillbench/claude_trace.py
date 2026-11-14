@@ -1,35 +1,21 @@
-"""Normalizing Claude Code `stream-json` output into skillbench's trace model.
-
-A trace is plain JSON data:
-    {"items": [...], "usage": {...}, "cost_usd": float | None, "num_turns": int | None}
-Each item is one of
-    {"kind": "assistant_text", "text": str}
-    {"kind": "tool_call", "id", "name", "input", "output", "ok", "children": [items]}
-    {"kind": "unknown", "raw_type": str}
-Items emitted inside a subagent go into the `children` of the tool call that spawned it.
-"""
+"""Normalizing Claude Code `stream-json` output into skillbench's trace model (see trace.py)."""
 
 import json
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class ClaudeRunInfo:
-    """Everything recovered from one turn's event stream."""
-
-    trace: dict[str, Any]
-    session_id: str | None = None
-    reported_model: str | None = None
-    plugins: list[Any] = field(default_factory=list)
-    skills: list[Any] = field(default_factory=list)
+from skillbench.trace import (
+    UNPARSEABLE_LINE,
+    TurnInfo,
+    build_turn_info,
+    empty_trace,
+    new_tool_call,
+    unknown_item,
+)
 
 
 class _TraceBuilder:
     def __init__(self) -> None:
-        self.info = ClaudeRunInfo(
-            trace={"items": [], "usage": {}, "cost_usd": None, "num_turns": None}
-        )
+        self.info = TurnInfo(trace=empty_trace())
         self._tool_calls_by_id: dict[str, dict[str, Any]] = {}
 
     def add_event(self, event: dict[str, Any]) -> None:
@@ -48,7 +34,7 @@ class _TraceBuilder:
             self._add_unknown(None, str(event_type))
 
     def add_unparseable_line(self) -> None:
-        self._add_unknown(None, "unparseable")
+        self._add_unknown(None, UNPARSEABLE_LINE)
 
     def _add_init(self, event: dict[str, Any]) -> None:
         self.info.session_id = event.get("session_id")
@@ -70,15 +56,7 @@ class _TraceBuilder:
                 self._add_unknown(parent_id, f"assistant.{block_type}")
 
     def _add_tool_call(self, parent_id: str | None, block: dict[str, Any]) -> None:
-        tool_call = {
-            "kind": "tool_call",
-            "id": block["id"],
-            "name": block["name"],
-            "input": block.get("input", {}),
-            "output": None,
-            "ok": None,
-            "children": [],
-        }
+        tool_call = new_tool_call(block["id"], block["name"], block.get("input", {}))
         self._tool_calls_by_id[block["id"]] = tool_call
         self._items_under(parent_id).append(tool_call)
 
@@ -104,7 +82,7 @@ class _TraceBuilder:
         trace["num_turns"] = event.get("num_turns")
 
     def _add_unknown(self, parent_id: str | None, raw_type: str) -> None:
-        self._items_under(parent_id).append({"kind": "unknown", "raw_type": raw_type})
+        self._items_under(parent_id).append(unknown_item(raw_type))
 
     def _items_under(self, parent_id: str | None) -> list[dict[str, Any]]:
         parent = self._tool_calls_by_id.get(parent_id) if parent_id else None
@@ -121,19 +99,6 @@ def _tool_result_text(content: Any) -> str:
     return json.dumps(content)
 
 
-def parse_claude_stream(raw_stdout: bytes) -> ClaudeRunInfo:
+def parse_claude_stream(raw_stdout: bytes) -> TurnInfo:
     """Parse raw stream-json stdout. Never raises on odd input; odd lines become `unknown`."""
-    builder = _TraceBuilder()
-    for line in raw_stdout.decode("utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            builder.add_unparseable_line()
-            continue
-        if isinstance(event, dict):
-            builder.add_event(event)
-        else:
-            builder.add_unparseable_line()
-    return builder.info
+    return build_turn_info(raw_stdout, _TraceBuilder())
