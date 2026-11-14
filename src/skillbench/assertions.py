@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from skillbench.trace import final_text
+
 _SKILL_TOOL = "Skill"
 _FILE_CONTAINS_KEYS = frozenset({"path", "text"})
 
@@ -29,6 +31,8 @@ class RunFacts:
     timed_out: bool
     prompt: str
     loaded_skills: list[Any]
+    # The test's max_turns, if the conversation was cut off there with answers still to send.
+    exceeded_turn_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -154,22 +158,21 @@ def _check_file_contains(spec: dict[str, str], facts: RunFacts) -> tuple[bool, s
     return False, f"{relative_path} does not contain {text!r}"
 
 
-def _final_text(facts: RunFacts) -> str | None:
-    """The last top-level assistant text: what the agent ended the run saying."""
-    texts = [item["text"] for item in facts.trace["items"] if item["kind"] == "assistant_text"]
-    return texts[-1] if texts else None
-
-
 def _check_final_text_contains(text: str, facts: RunFacts) -> tuple[bool, str]:
-    final_text = _final_text(facts)
-    if final_text is None:
+    agent_final_text = final_text(facts.trace["items"])
+    if agent_final_text is None:
         return False, "the agent produced no text"
-    if text in final_text:
+    if text in agent_final_text:
         return True, f"final text contains {text!r}"
-    return False, f"final text does not contain {text!r} (final text: {final_text!r})"
+    return False, f"final text does not contain {text!r} (final text: {agent_final_text!r})"
 
 
 def _check_max_turns(limit: int, facts: RunFacts) -> tuple[bool, str]:
+    if facts.exceeded_turn_limit is not None:
+        return False, (
+            f"the conversation was stopped at the max_turns limit of {facts.exceeded_turn_limit} "
+            "with answers still to send"
+        )
     turns = facts.trace["num_turns"]
     if turns is None:
         return False, "the turn count was not reported by the CLI"

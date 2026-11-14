@@ -13,6 +13,7 @@ dt { font-weight: 600; }
 .item { margin: .5rem 0; }
 .text { white-space: pre-wrap; background: #fff; border-left: 3px solid #4a7; padding: .5rem; }
 .unknown { color: #888; font-style: italic; }
+.user { white-space: pre-wrap; background: #eef3fb; border-left: 3px solid #47a; padding: .5rem; }
 details { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: .3rem .6rem; }
 summary { cursor: pointer; font-family: monospace; }
 .error { color: #b00; }
@@ -73,6 +74,10 @@ def _render_item(item: dict[str, Any]) -> str:
         return f'<div class="text">{escape(item["text"])}</div>'
     if item["kind"] == "tool_call":
         return _render_tool_call(item)
+    if item["kind"] == "user_message":
+        label = f"turn {item['turn']}, {item['source']} answer"
+        return f'<div class="user"><strong>{escape(label)}:</strong> {escape(item["text"])}</div>'
+
     return f'<div class="unknown">unknown event: {escape(item["raw_type"])}</div>'
 
 

@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from skillbench.answers import AskUser
+from skillbench.answers_file import AnswersNotSavedError, save_answers
 from skillbench.config import ConfigError, load_test
-from skillbench.runner import BackendNotFoundError, run_test
+from skillbench.runner import BackendNotFoundError, RunOptions, run_test
 
 _RUNS_DIR_NAME = "runs"
 _TEST_FILE_PATTERN = "*.yaml"
@@ -16,6 +18,8 @@ _EXIT_USAGE_ERROR = 2
 _SUMMARY_HEADER = ("test", "status", "duration", "turns")
 _UNKNOWN_TURNS = "-"
 _COLUMN_GAP = "  "
+_ANSWER_PROMPT = "your answer (empty or /done to finish): "
+_YES_ANSWERS = ("y", "yes")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,13 +36,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_command(test_path: Path, model_override: str | None) -> int:
     runs_root = Path.cwd() / _RUNS_DIR_NAME
+    ask_user: AskUser | None = _ask_in_terminal if sys.stdin.isatty() else None
+    options = RunOptions(model_override=model_override, ask_user=ask_user)
     try:
         # Validate every test before running any, so one bad file doesn't waste a partial suite.
         specs = [load_test(path) for path in _find_test_files(test_path)]
         records = []
         for spec in specs:
-            record = run_test(spec, runs_root, model_override)
+            record = run_test(spec, runs_root, options)
             print(_format_run_line(record, runs_root))
+            if ask_user is not None:
+                _offer_to_save_answers(record)
             records.append(record)
     except (ConfigError, BackendNotFoundError) as error:
         print(f"skillbench: {error}", file=sys.stderr)
@@ -60,9 +68,37 @@ def _find_test_files(test_path: Path) -> list[Path]:
     return test_files
 
 
+def _ask_in_terminal(agent_final_text: str) -> str | None:
+    """Show what the agent ended its turn with and read the user's reply; None at end of input."""
+    print(f"\n--- agent ---\n{agent_final_text}\n-------------")
+    try:
+        return input(_ANSWER_PROMPT)
+    except EOFError:
+        return None
+
+
+def _offer_to_save_answers(record: dict[str, Any]) -> None:
+    """After a conversation with live answers, offer to make them the test's scripted answers."""
+    messages = [item for item in record["trace"]["items"] if item["kind"] == "user_message"]
+    if not any(message["source"] == "live" for message in messages):
+        return
+    test_path = Path(record["test_file"])
+    try:
+        reply = input(f"save these answers to {test_path}? [y/N] ")
+    except EOFError:
+        return
+    if reply.strip().lower() not in _YES_ANSWERS:
+        return
+    try:
+        save_answers(test_path, [message["text"] for message in messages])
+    except AnswersNotSavedError as error:
+        print(f"skillbench: {error}", file=sys.stderr)
+
+
 def _format_run_line(record: dict[str, Any], runs_root: Path) -> str:
     report_path = runs_root / record["run_id"] / "report.html"
-    return f"{record['test_name']}: {record['status']} in {record['duration_s']}s -> {report_path}"
+    line = f"{record['test_name']}: {record['status']} in {record['duration_s']}s -> {report_path}"
+    return f"{line}\n  {record['error']}" if record["error"] else line
 
 
 def _format_summary(records: list[dict[str, Any]]) -> str:

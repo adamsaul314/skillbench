@@ -19,7 +19,7 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class TestSpec:
-    """A validated test. Keys later slices act on (answers, interactive, ...) are validated only."""
+    """A validated test. Keys later slices act on (backends) are validated only."""
 
     source_path: Path
     name: str
@@ -31,6 +31,9 @@ class TestSpec:
     allowed_tools: list[str] = field(default_factory=list)
     denied_tools: list[str] = field(default_factory=list)
     isolation: str = "clean"
+    answers: list[str] = field(default_factory=list)
+    is_interactive: bool = False
+    max_turns: int | None = None  # limit on conversation turns (the prompt plus each answer)
     assertions: list[Assertion] = field(default_factory=list)
 
 
@@ -99,6 +102,9 @@ def load_test(test_path: Path) -> TestSpec:
         allowed_tools=raw.get("allowed_tools", []),
         denied_tools=raw.get("denied_tools", []),
         isolation=raw.get("isolation", "clean"),
+        answers=raw.get("answers", []),
+        is_interactive=raw.get("interactive", False),
+        max_turns=raw.get("max_turns"),
         assertions=_parse_assertions(test_path, raw.get("assert", [])),
     )
 

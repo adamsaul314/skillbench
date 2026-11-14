@@ -97,8 +97,8 @@ assert:
 - **Notes:** `file_*` paths are relative to the workspace; paths escaping the workspace are a validation error.
 
 ### slice-3: multi-turn answers (scripted + live)
-- **status:** todo
-- **base:**
+- **status:** done
+- **base:** 25a3a2e95d92492684303ecfb24ad02074a580cb
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC3.1 Given `answers: [a, b]`, after turn 1 skillbench sends `a` as turn 2 by resuming the same session (`--resume <session_id>`), then `b` as turn 3, then stops; raw logs are `raw/1.jsonl`..`raw/3.jsonl`, and the trace shows the turns in order with each user answer.
@@ -155,3 +155,5 @@ assert:
 - 2026-11-14 slice-1 done (fix_rounds=0)
 - 2026-11-14 slice-2 started at 5fd988de4fb2d53ddfd8058717ad2fc9d447b604
 - 2026-11-14 slice-2 done (fix_rounds=0)
+- 2026-11-14 slice-3 started at 25a3a2e95d92492684303ecfb24ad02074a580cb
+- 2026-11-14 slice-3 done (fix_rounds=0)

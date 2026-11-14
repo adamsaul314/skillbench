@@ -46,3 +46,15 @@ def test_ac1_7_report_loads_nothing_from_the_network(fake_claude, monkeypatch):
     assert not re.search(r"<(script|link|img|iframe)[^>]*(src|href)=", html, re.IGNORECASE)
     assert "@import" not in html
     assert not re.search(r"url\(\s*['\"]?https?:", html, re.IGNORECASE)
+
+
+def test_ac3_1_report_shows_each_user_answer_between_turns(fake_claude, monkeypatch):
+    fake_claude.use_streams(monkeypatch, "basic.jsonl", "turn2.jsonl")
+    test_path = write_test_yaml(
+        Path.cwd(), {"name": "report", "prompt": "/x", "answers": ["it is for <todos>"]}
+    )
+    run_skillbench(str(test_path))
+
+    html = (only_run_dir() / "report.html").read_text(encoding="utf-8")
+    answer_at = html.index("it is for &lt;todos&gt;")
+    assert html.index("Q1: What is the &lt;app&gt; for?") < answer_at < html.index("Q2: Who uses")

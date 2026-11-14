@@ -105,10 +105,10 @@ def test_ac1_1_each_run_gets_its_own_workspace(fake_claude):
     test_path = write_test_yaml(Path.cwd(), {"name": "ws", "prompt": PROMPT})
 
     run_skillbench(str(test_path))
-    first_workspace = fake_claude.cwd
     run_skillbench(str(test_path))
 
-    assert fake_claude.cwd != first_workspace
+    first_run, second_run = fake_claude.invocations
+    assert first_run["cwd"] != second_run["cwd"]
 
 
 def test_ac1_2_workspace_is_git_repo_with_fixture_copy_and_fixture_untouched(fake_claude):

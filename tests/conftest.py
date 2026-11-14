@@ -1,5 +1,6 @@
 """Shared fixtures: a fake `claude` on PATH and helpers to write tests and read runs."""
 
+import io
 import json
 import os
 import sys
@@ -21,21 +22,35 @@ class FakeClaude:
     record_path: Path
 
     def use_stream(self, monkeypatch, stream_name: str) -> Path:
-        stream_path = STREAMS_DIR / stream_name
-        monkeypatch.setenv("FAKE_CLAUDE_STREAM", str(stream_path))
+        [stream_path] = self.use_streams(monkeypatch, stream_name)
         return stream_path
+
+    def use_streams(self, monkeypatch, *stream_names: str) -> list[Path]:
+        """Invocation N replays stream N; the last stream repeats for later invocations."""
+        stream_paths = [STREAMS_DIR / name for name in stream_names]
+        monkeypatch.setenv("FAKE_CLAUDE_STREAM", os.pathsep.join(map(str, stream_paths)))
+        return stream_paths
 
     @property
     def was_launched(self) -> bool:
         return self.record_path.exists()
 
     @property
+    def invocations(self) -> list[dict]:
+        if not self.was_launched:
+            return []
+        lines = self.record_path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines]
+
+    @property
     def argv(self) -> list[str]:
-        return json.loads(self.record_path.read_text(encoding="utf-8"))["argv"]
+        """The first invocation's arguments."""
+        return self.invocations[0]["argv"]
 
     @property
     def cwd(self) -> Path:
-        return Path(json.loads(self.record_path.read_text(encoding="utf-8"))["cwd"])
+        """The first invocation's working directory."""
+        return Path(self.invocations[0]["cwd"])
 
 
 def _install_fake_executable(bin_dir: Path) -> None:
@@ -54,7 +69,7 @@ def fake_claude(tmp_path, monkeypatch) -> FakeClaude:
     bin_dir = tmp_path / "fake-bin"
     _install_fake_executable(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
-    record_path = tmp_path / "fake-claude-invocation.json"
+    record_path = tmp_path / "fake-claude-invocations.jsonl"
     monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record_path))
     monkeypatch.setenv("FAKE_CLAUDE_STREAM", str(STREAMS_DIR / "basic.jsonl"))
     monkeypatch.delenv("FAKE_CLAUDE_SLEEP_S", raising=False)
@@ -84,3 +99,18 @@ def only_run_dir() -> Path:
 
 def load_run_record() -> dict:
     return json.loads((only_run_dir() / "run.json").read_text(encoding="utf-8"))
+
+
+class FakeTerminal(io.StringIO):
+    """Stands in for stdin: typed lines are read in order; `is_tty` says whether it's a terminal."""
+
+    def __init__(self, typed: str, is_tty: bool = True) -> None:
+        super().__init__(typed)
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
+
+
+def type_into_terminal(monkeypatch, *lines: str) -> None:
+    monkeypatch.setattr(sys, "stdin", FakeTerminal("".join(f"{line}\n" for line in lines)))

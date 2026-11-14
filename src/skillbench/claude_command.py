@@ -1,4 +1,4 @@
-"""Building the `claude` command-line arguments for one test turn."""
+"""Building the `claude` command-line arguments for each turn of a test."""
 
 import json
 
@@ -10,13 +10,19 @@ _ALWAYS_DENIED_TOOLS = ("AskUserQuestion",)
 _EMPTY_MCP_CONFIG = json.dumps({"mcpServers": {}})
 
 
-def build_claude_args(spec: TestSpec, model: str | None, has_api_key: bool) -> list[str]:
-    """Arguments after the executable. `model` is the effective model, or None for the default."""
-    # The prompt is positional and comes first: claude's list-valued flags
-    # (--disallowedTools, --add-dir, ...) would otherwise swallow it.
+def build_turn_args(message: str, resume_session_id: str | None) -> list[str]:
+    """The arguments that differ per turn. They must come before `build_session_args`: the
+    message is positional, and claude's list-valued flags (--disallowedTools, --add-dir, ...)
+    would otherwise swallow it."""
+    args = ["-p", message]
+    if resume_session_id is not None:
+        args += ["--resume", resume_session_id]
+    return args
+
+
+def build_session_args(spec: TestSpec, model: str | None, has_api_key: bool) -> list[str]:
+    """The arguments every turn shares. `model` is the effective model, or None for the default."""
     args = [
-        "-p",
-        spec.prompt,
         "--output-format",
         "stream-json",
         "--verbose",
