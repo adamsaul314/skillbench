@@ -58,17 +58,17 @@ assert:
 ```
 
 ## Checks
-<!-- build confirms these on its first run. -->
+<!-- confirmed in build slice-1 (ruff is a dev dependency in pyproject.toml). -->
 - **test:** `uv run pytest`
-- **lint:** `uv run ruff check .` (to confirm in build)
-- **typecheck:** none (to confirm in build)
-- **format:** `uv run ruff format .`   **format-check:** `uv run ruff format --check .` (to confirm in build)
+- **lint:** `uv run ruff check .`
+- **typecheck:** none
+- **format:** `uv run ruff format .`   **format-check:** `uv run ruff format --check .`
 
 ## Slices
 
 ### slice-1: single capture run on Claude
-- **status:** todo
-- **base:**
+- **status:** done
+- **base:** 0e814c01068052c95fb8a65ccdb63d2919e1ca8e
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC1.1 Given a valid test YAML and a `claude` on PATH, `skillbench run test.yaml` launches `claude -p` with the test prompt, stream-json output, bypass permissions, `AskUserQuestion` disallowed, and the skill dir passed via `--plugin-dir`/`--add-dir`; the process cwd is a new temp workspace.
@@ -151,3 +151,5 @@ assert:
 - 2026-11-14 plan written, awaiting approval
 - 2026-11-14 approved; feature_base pending (repo has no commits yet)
 - 2026-11-14 approved at b777502f64d0330f568b3d4214a387c58c0c639c
+- 2026-11-14 slice-1 started at 0e814c01068052c95fb8a65ccdb63d2919e1ca8e
+- 2026-11-14 slice-1 done (fix_rounds=0)
