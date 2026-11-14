@@ -25,6 +25,7 @@ _SUMMARY_FIELDS = (
     "backend",
     "model",
     "status",
+    "run_status",
     "exit_code",
     "session_id",
     "start_time",

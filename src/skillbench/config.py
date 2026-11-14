@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from skillbench.assertions import Assertion, InvalidAssertionError, parse_assertion
+
 _DEFAULT_TIMEOUT_S = 600
 _ISOLATION_MODES = ("clean", "none")
 
@@ -17,7 +19,7 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class TestSpec:
-    """A validated test. Keys later slices act on (answers, assert, ...) are validated only."""
+    """A validated test. Keys later slices act on (answers, interactive, ...) are validated only."""
 
     source_path: Path
     name: str
@@ -29,6 +31,7 @@ class TestSpec:
     allowed_tools: list[str] = field(default_factory=list)
     denied_tools: list[str] = field(default_factory=list)
     isolation: str = "clean"
+    assertions: list[Assertion] = field(default_factory=list)
 
 
 def _is_string(value: Any) -> bool:
@@ -96,6 +99,7 @@ def load_test(test_path: Path) -> TestSpec:
         allowed_tools=raw.get("allowed_tools", []),
         denied_tools=raw.get("denied_tools", []),
         isolation=raw.get("isolation", "clean"),
+        assertions=_parse_assertions(test_path, raw.get("assert", [])),
     )
 
 
@@ -136,3 +140,13 @@ def _resolve_directories(test_path: Path, raw: dict[str, Any]) -> dict[str, Path
             raise ConfigError(f"{test_path}: field '{key}' directory not found: {directory}")
         resolved[key] = directory
     return resolved
+
+
+def _parse_assertions(test_path: Path, entries: list[Any]) -> list[Assertion]:
+    assertions = []
+    for index, entry in enumerate(entries):
+        try:
+            assertions.append(parse_assertion(entry))
+        except InvalidAssertionError as error:
+            raise ConfigError(f"{test_path}: field 'assert[{index}]' {error}") from error
+    return assertions

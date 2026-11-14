@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from skillbench.assertions import AssertionResult, RunFacts, evaluate_assertions
 from skillbench.claude_command import build_claude_args
 from skillbench.claude_trace import parse_claude_stream
 from skillbench.config import TestSpec
@@ -40,14 +41,15 @@ class _ProcessOutcome:
     duration_s: float
 
     @property
-    def status(self) -> str:
+    def run_status(self) -> str:
         if self.timed_out:
             return "timeout"
         return "completed" if self.exit_code == 0 else "error"
 
 
 def run_test(spec: TestSpec, runs_root: Path, model_override: str | None) -> dict[str, Any]:
-    """Run `spec` once on Claude, write run.json, raw output and report.html; return the record."""
+    """Run `spec` once on Claude, check its assertions, write run.json, raw output and
+    report.html; return the record."""
     executable = _find_claude()
     model = model_override or spec.model
     args = build_claude_args(spec, model, has_api_key=bool(os.environ.get(_API_KEY_ENV_VAR)))
@@ -60,6 +62,15 @@ def run_test(spec: TestSpec, runs_root: Path, model_override: str | None) -> dic
     outcome = _run_process([executable, *args], workspace, stdout_path, spec.timeout_s)
 
     run_info = parse_claude_stream(stdout_path.read_bytes())
+    facts = RunFacts(
+        trace=run_info.trace,
+        workspace=workspace,
+        exit_code=outcome.exit_code,
+        timed_out=outcome.timed_out,
+        prompt=spec.prompt,
+        loaded_skills=run_info.skills,
+    )
+    assertion_results = evaluate_assertions(spec.assertions, facts)
     record = {
         "run_id": run_dir.name,
         "test_name": spec.name,
@@ -70,15 +81,24 @@ def run_test(spec: TestSpec, runs_root: Path, model_override: str | None) -> dic
         "end_time": outcome.end_time.isoformat(),
         "duration_s": outcome.duration_s,
         "session_id": run_info.session_id,
-        "status": outcome.status,
+        "status": _test_status(outcome.run_status, assertion_results),
+        "run_status": outcome.run_status,
         "exit_code": outcome.exit_code,
         "workspace": str(workspace),
         "plugins": run_info.plugins,
         "skills": run_info.skills,
+        "assertions": [result.to_json() for result in assertion_results],
         "trace": run_info.trace,
     }
     _write_run_files(run_dir, record)
     return record
+
+
+def _test_status(run_status: str, assertion_results: list[AssertionResult]) -> str:
+    """`error` if the CLI did not finish cleanly, else `fail` if any assertion failed."""
+    if run_status != "completed":
+        return "error"
+    return "pass" if all(result.passed for result in assertion_results) else "fail"
 
 
 def _find_claude() -> str:

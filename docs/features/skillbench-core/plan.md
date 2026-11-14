@@ -84,8 +84,8 @@ assert:
 - **Notes:** Fake `claude` script for tests. Unknown event types are kept in the raw log and listed in the trace as `unknown` rather than crashing.
 
 ### slice-2: assertions, pass/fail, directories
-- **status:** todo
-- **base:**
+- **status:** done
+- **base:** 5fd988de4fb2d53ddfd8058717ad2fc9d447b604
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC2.1 Each assertion type evaluates correctly against a trace/workspace, with one passing and one failing test each: `skill_invoked`, `tool_called`, `tool_not_called`, `file_exists`, `file_contains`, `final_text_contains`, `max_turns`, `exit_ok`.
@@ -153,3 +153,5 @@ assert:
 - 2026-11-14 approved at b777502f64d0330f568b3d4214a387c58c0c639c
 - 2026-11-14 slice-1 started at 0e814c01068052c95fb8a65ccdb63d2919e1ca8e
 - 2026-11-14 slice-1 done (fix_rounds=0)
+- 2026-11-14 slice-2 started at 5fd988de4fb2d53ddfd8058717ad2fc9d447b604
+- 2026-11-14 slice-2 done (fix_rounds=0)

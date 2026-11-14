@@ -23,7 +23,7 @@ def test_ac1_4_run_json_records_run_metadata(fake_claude, monkeypatch):
     assert record["backend"] == "claude"
     assert record["model"] == "claude-sonnet-5-5"
     assert record["session_id"] == "sess-basic-1"
-    assert record["status"] == "completed"
+    assert record["run_status"] == "completed"
     assert record["exit_code"] == 0
     assert Path(record["workspace"]).resolve() == fake_claude.cwd.resolve()
     assert record["plugins"] == [{"name": "overpowered", "path": "/plugins/overpowered"}]
@@ -82,7 +82,7 @@ def test_ac1_4_nonzero_exit_is_recorded_as_error(fake_claude, monkeypatch):
     exit_code = _run_with_stream(fake_claude, monkeypatch)
 
     record = load_run_record()
-    assert record["status"] == "error"
+    assert record["run_status"] == "error"
     assert record["exit_code"] == 3
     assert exit_code != 0
 
@@ -139,7 +139,7 @@ def test_ac1_9_timeout_kills_process_and_keeps_partial_trace(fake_claude, monkey
     record = load_run_record()
     assert elapsed_s < 30
     assert exit_code != 0
-    assert record["status"] == "timeout"
+    assert record["run_status"] == "timeout"
     assert record["session_id"] == "sess-hang-1"
     assert record["trace"]["items"] == [{"kind": "assistant_text", "text": "Starting a long task."}]
 
