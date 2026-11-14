@@ -1,0 +1,25 @@
+# E2E smoke test of the overpowered loop: understand -> approve -> build slice-1.
+# Live only (real quota, ~20-40 min): uv run skillbench run evals/smoke --backend claude
+name: overpowered-loop
+skill_dir: ../../../overpowered          # the overpowered plugin checked out next to skillbench
+fixture: ../../fixtures/tiny-project
+prompt: >-
+  /overpowered:understand add an optional name parameter to greet() in greet.py, so
+  greet("Ada") returns "Hello, Ada!" and greet() still returns "Hello, world!".
+  Use the slug greet-name.
+answers:
+  - >-
+    Yes to all of your recommended answers, including for any further questions.
+    We have a shared understanding, so write the plan now; one slice is enough.
+  - approved
+  - 'Commit everything now with: git add -A && git commit -m "plan: greet-name"'
+  - /overpowered:build greet-name slice-1
+max_turns: 8
+timeout_s: 2400                          # per turn; the build turn runs tests and a reviewer
+assert:
+  - file_contains:
+      path: docs/features/greet-name/plan.md
+      text: "approval: approved"
+  - skill_invoked: overpowered:build
+  - command_succeeds: python -m pytest -q
+  - exit_ok: true

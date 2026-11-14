@@ -136,8 +136,8 @@ assert:
 - **Notes:** Copilot isn't installed on the dev machine; the adapter is built against the documented event format and a hand-written sample stream. "Verify with one real Copilot run" is a known gap until Copilot is installed.
 
 ### slice-6: overpowered smoke test
-- **status:** todo
-- **base:**
+- **status:** in-progress
+- **base:** 9d420002ca6f38b4b1d08f87c4c89b3a3a3d524f
 - **fix_rounds:** 0
 - **Acceptance criteria:**
   - AC6.1 `fixtures/tiny-project/` exists: a minimal Python project with one passing pytest test, usable as a git repo.
@@ -161,3 +161,4 @@ assert:
 - 2026-11-14 slice-4 done (fix_rounds=0)
 - 2026-11-14 slice-5 started at bef95134e7c6d2ec138a69d06b8ab00e8b568174
 - 2026-11-14 slice-5 done (fix_rounds=0)
+- 2026-11-14 slice-6 started at 9d420002ca6f38b4b1d08f87c4c89b3a3a3d524f

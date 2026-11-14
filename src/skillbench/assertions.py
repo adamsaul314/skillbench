@@ -1,5 +1,6 @@
 """Built-in assertions: parsing a test's `assert:` list and checking it against a finished run."""
 
+import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -9,6 +10,8 @@ from skillbench.trace import final_text
 
 _SKILL_TOOL = "Skill"
 _FILE_CONTAINS_KEYS = frozenset({"path", "text"})
+# How much of a failed command's output its reason quotes: enough to see the error, not a log.
+_COMMAND_OUTPUT_TAIL_CHARS = 2000
 
 
 class InvalidAssertionError(Exception):
@@ -113,17 +116,24 @@ def _check_skill_invoked(skill_name: str, facts: RunFacts) -> tuple[bool, str]:
     count = invoked.count(skill_name)
     if count:
         return True, f"{skill_name} was invoked {_times(count)}"
-    if _prompt_invokes(facts, skill_name):
-        return True, f"{skill_name} was invoked by the prompt"
+    if skill_name in facts.loaded_skills:
+        if _is_slash_command_for(facts.prompt, skill_name):
+            return True, f"{skill_name} was invoked by the prompt"
+        if any(_is_slash_command_for(text, skill_name) for text in _user_message_texts(facts)):
+            return True, f"{skill_name} was invoked by a user message"
     others = ", ".join(str(name) for name in invoked) or "none"
     return False, f"{skill_name} was never invoked (skills invoked: {others})"
 
 
-def _prompt_invokes(facts: RunFacts, skill_name: str) -> bool:
-    """A `/skill args` prompt runs the skill directly, without a Skill tool call, but only
-    if the CLI actually loaded that skill."""
-    command = facts.prompt.split(maxsplit=1)[0] if facts.prompt.strip() else ""
-    return command == f"/{skill_name}" and skill_name in facts.loaded_skills
+def _is_slash_command_for(message: str, skill_name: str) -> bool:
+    """A message starting `/skill args` runs the skill directly, without a Skill tool call
+    (provided the CLI loaded that skill)."""
+    command = message.split(maxsplit=1)[0] if message.strip() else ""
+    return command == f"/{skill_name}"
+
+
+def _user_message_texts(facts: RunFacts) -> list[str]:
+    return [item["text"] for item in facts.trace["items"] if item["kind"] == "user_message"]
 
 
 def _tool_call_reason(tool_name: str, count: int) -> str:
@@ -187,6 +197,23 @@ def _check_exit_ok(_expected: bool, facts: RunFacts) -> tuple[bool, str]:
     return facts.exit_code == 0, f"the CLI exited with code {facts.exit_code}"
 
 
+def _check_command_succeeds(command: str, facts: RunFacts) -> tuple[bool, str]:
+    completed = subprocess.run(
+        command,
+        shell=True,
+        cwd=facts.workspace,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    reason = f"{command!r} exited with code {completed.returncode}"
+    if completed.returncode == 0:
+        return True, reason
+    output_tail = (completed.stdout + completed.stderr).strip()[-_COMMAND_OUTPUT_TAIL_CHARS:]
+    return False, f"{reason}; output: {output_tail!r}"
+
+
 _Checker = Callable[[Any, RunFacts], tuple[bool, str]]
 
 # assertion type -> (value validator, description of the expected value, checker)
@@ -207,6 +234,11 @@ _ASSERTION_TYPES: dict[str, tuple[Callable[[Any], bool], str, _Checker]] = {
     "final_text_contains": (_is_non_empty_string, "a string", _check_final_text_contains),
     "max_turns": (_is_positive_int, "a positive integer", _check_max_turns),
     "exit_ok": (_is_true, "true", _check_exit_ok),
+    "command_succeeds": (
+        _is_non_empty_string,
+        "a shell command string",
+        _check_command_succeeds,
+    ),
 }
 
 
