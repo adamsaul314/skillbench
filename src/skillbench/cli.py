@@ -12,7 +12,14 @@ from typing import Any
 from skillbench.claude import ClaudeNotFoundError, find_claude
 from skillbench.config import TEST_FOLDERS, ConfigError, Project, TestSpec, find_project, load_test
 from skillbench.dashboard import INDEX_FILE_NAME, write_dashboard
-from skillbench.progress import Progress, TestHeading, format_seconds, make_progress
+from skillbench.progress import (
+    Progress,
+    TestHeading,
+    format_seconds,
+    make_progress,
+    plural,
+    shorten,
+)
 from skillbench.runner import AskUser, RunOptions, run_test
 from skillbench.scaffold import scaffold
 
@@ -139,31 +146,35 @@ def _install_skill_command() -> int:
 
 def _check_command(project: Project) -> int:
     """Load every test file and report each one's problems, without running anything."""
-    problems = 0
-    checked = 0
-    specs: list[TestSpec] = []
-    for kind in TEST_FOLDERS:
-        tests_dir = project.tests_dir(kind)
-        test_files = sorted(tests_dir.rglob("*.yaml")) if tests_dir.is_dir() else []
-        for test_path in test_files:
-            checked += 1
-            try:
-                specs.append(load_test(test_path, project, kind))
-            except ConfigError as error:
-                problems += 1
-                problem = str(error).removeprefix(f"{test_path}: ")
-                print(f"error    {_shown_path(test_path)}: {problem}")
-            else:
-                print(f"ok       {_shown_path(test_path)}")
+    test_files = [
+        (test_path, kind)
+        for kind in TEST_FOLDERS
+        if (tests_dir := project.tests_dir(kind)).is_dir()
+        for test_path in sorted(tests_dir.rglob("*.yaml"))
+    ]
+    loaded = [_check_test(test_path, project, kind) for test_path, kind in test_files]
+    specs = [spec for spec in loaded if spec is not None]
+    checked, problems = len(loaded), len(loaded) - len(specs)
     if (warning := _missing_plugin_warning(project, specs)) is not None:
         print(f"warning  {warning}")
     if checked == 0:
         print(f"no test files yet in {_shown_path(project.directory)}/skills or /agent")
     elif problems == 0:
-        print(f"\nall {_plural(checked, 'test file')} are valid")
+        print(f"\nall {plural(checked, 'test file')} are valid")
     else:
-        print(f"\n{problems} of {_plural(checked, 'test file')} have problems")
+        print(f"\n{problems} of {plural(checked, 'test file')} have problems")
     return _EXIT_OK if problems == 0 else _EXIT_USAGE_ERROR
+
+
+def _check_test(test_path: Path, project: Project, kind: str) -> TestSpec | None:
+    """Print whether one test file loads; its spec, or None when it has a problem."""
+    try:
+        spec = load_test(test_path, project, kind)
+    except ConfigError as error:
+        print(f"error    {_shown_path(test_path)}: {str(error).removeprefix(f'{test_path}: ')}")
+        return None
+    print(f"ok       {_shown_path(test_path)}")
+    return spec
 
 
 def _missing_plugin_warning(project: Project, specs: list[TestSpec]) -> str | None:
@@ -239,7 +250,7 @@ def _variants(spec: TestSpec, repeat_override: int | None) -> list[TestSpec]:
     variants = [spec] if spec.has_forced_run else []
     for case in spec.triggers:
         label = "should" if case.should_invoke else "should not"
-        name = f"{spec.name} [{label}] {_shorten(case.prompt, _TRIGGER_PROMPT_SHOWN_CHARS)}"
+        name = f"{spec.name} [{label}] {shorten(case.prompt, _TRIGGER_PROMPT_SHOWN_CHARS)}"
         variants.append(replace(spec, name=name, trigger=case, triggers=[]))
     return variants
 
@@ -248,12 +259,12 @@ def _describe_plan(variants: list[TestSpec]) -> str:
     """e.g. `6 tests × 5 repeats = 30 runs`."""
     repeats = {variant.repeat for variant in variants}
     total = sum(variant.repeat for variant in variants)
-    tests = _plural(len(variants), "test")
+    tests = plural(len(variants), "test")
     if repeats == {1}:
-        return f"{tests} = {_plural(total, 'run')}"
+        return f"{tests} = {plural(total, 'run')}"
     if len(repeats) == 1:
-        return f"{tests} × {_plural(repeats.pop(), 'repeat')} = {_plural(total, 'run')}"
-    return f"{tests} (some repeated) = {_plural(total, 'run')}"
+        return f"{tests} × {plural(repeats.pop(), 'repeat')} = {plural(total, 'run')}"
+    return f"{tests} (some repeated) = {plural(total, 'run')}"
 
 
 # --- running and reporting -----------------------------------------------------------------
@@ -368,11 +379,3 @@ def _shown_path(path: Path) -> str:
         return path.relative_to(Path.cwd()).as_posix()
     except ValueError:
         return str(path)
-
-
-def _shorten(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
-def _plural(count: int, noun: str) -> str:
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"

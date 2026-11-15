@@ -18,7 +18,7 @@ from skillbench import claude, skills
 from skillbench.assertions import Assertion, AssertionResult, RunFacts, evaluate_assertions
 from skillbench.claude import TurnInfo, UserMessage
 from skillbench.config import TestSpec
-from skillbench.progress import Progress, SilentProgress
+from skillbench.progress import Progress
 from skillbench.workspace import FixtureError, copy_folder, create_workspace, run_shell
 
 _IS_WINDOWS = os.name == "nt"
@@ -36,9 +36,9 @@ class RunOptions:
 
     executable: str  # the claude CLI
     eval_id: str  # shared by every run of one invocation
+    progress: Progress  # told as each step starts
     model_override: str | None = None
     ask_user: AskUser | None = None  # None when there is no terminal to ask live answers in
-    progress: Progress = field(default_factory=SilentProgress)  # told as each step starts
 
     def model_for(self, spec: TestSpec) -> str | None:
         return self.model_override or spec.model
@@ -99,7 +99,7 @@ def _prepare_for_workspace(
     skills.make_visible(workspace, found)
     spec = replace(spec, plugin_dirs=found.plugin_dirs)
     target = skills.resolve(workspace, found, spec.skill) if spec.skill is not None else None
-    subject = skills.describe_subject(found, target, is_trigger=spec.trigger is not None)
+    subject = skills.describe_subject(found, target)
     return _with_skill_prompt(spec, target), subject
 
 
@@ -211,7 +211,7 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
     while True:
         message = spec.prompt if user_message is None else user_message.text
         turn_number = len(conversation.turns) + 1
-        options.progress.step_started(message)
+        options.progress.step_started()
         outcome, info = launcher.run_turn(turn_number, message, conversation.session_to_resume)
         conversation.add_turn(user_message, outcome, info)
         stop = _stop_before_next_turn(conversation, answers)
@@ -254,13 +254,13 @@ class _BetweenTurns:
         return None
 
     def _clear(self) -> str:
-        self.progress.step_started(_CLEAR)
+        self.progress.step_started()
         self.conversation.starts_fresh = True
         self.conversation.pending_actions.append({"kind": "new_session"})
         return "(the next message starts a fresh session)"
 
     def _run(self, command: str) -> str:
-        self.progress.step_started(f"{_COMMAND_PREFIX}{command}")
+        self.progress.step_started()
         result = run_shell(command, self.workspace, self.timeout_s)
         self.conversation.pending_actions.append(
             {"kind": "user_command", "command": command, **vars(result)}

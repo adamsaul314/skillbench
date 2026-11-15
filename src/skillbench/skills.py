@@ -184,16 +184,14 @@ def _shown_path(path: Path, workspace: Path) -> str:
         return path.as_posix()
 
 
-def describe_subject(
-    found: WorkspaceSkills, target: FoundSkill | None, is_trigger: bool
-) -> dict[str, Any]:
+def describe_subject(found: WorkspaceSkills, target: FoundSkill | None) -> dict[str, Any]:
     """What a run tests, for its record: the skill it targets (and that skill's plugin), else
     every plugin loaded, else the repo's own skills and agents."""
     plugins = {_plugin_name(plugin_dir): plugin_dir for plugin_dir in found.plugin_dirs}
     if target is not None:
         plugin_dir = plugins.get(target.plugin_name or "")
         return {
-            "kind": "trigger" if is_trigger else "skill",
+            "kind": "skill",
             "skill": target.name,
             "plugin": _plugin_summary(plugin_dir) if plugin_dir is not None else None,
         }
@@ -228,7 +226,5 @@ def _agent_names(agents_dir: Path) -> list[str]:
     names = []
     for agent_file in sorted(agents_dir.glob("*.md")):
         name = _frontmatter(agent_file).get("name")
-        names.append(
-            name if isinstance(name, str) and name else agent_file.stem.removesuffix(".agent")
-        )
+        names.append(name if isinstance(name, str) and name else agent_file.stem)
     return names

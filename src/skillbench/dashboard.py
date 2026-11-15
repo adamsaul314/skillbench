@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from skillbench.claude import final_text
-from skillbench.progress import format_seconds, steps_taken, why_not_passed
+from skillbench.progress import (
+    format_seconds,
+    plural,
+    run_error,
+    shorten,
+    steps_taken,
+    why_not_passed,
+)
+from skillbench.workspace import is_git_url
 
 INDEX_FILE_NAME = "index.html"
 _RUN_RECORD_FILE_NAME = "run.json"
@@ -330,10 +338,6 @@ def _status_cell(status: str) -> str:
     return f'<span class="status-{escape(status)}">{escape(status)}</span>'
 
 
-def _row(cells: tuple[str, ...]) -> str:
-    return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
-
-
 def _render_detail(run_id: str, record: dict[str, Any]) -> str:
     """A run's page: what it tests and how, first; then its results."""
     return (
@@ -346,51 +350,42 @@ def _render_detail(run_id: str, record: dict[str, Any]) -> str:
 
 
 def _subject_title(record: dict[str, Any]) -> str:
-    """What's under test, short: `grilling skill`, `overpowered 0.2.0`, `this repo's setup`.
-    Runs recorded before subjects existed show their test name."""
+    """What's under test, short: `grilling skill`, `overpowered 0.2.0`, `This repo's setup`."""
+    name, stamp, _ = _subject(record)
+    return f"{name} {stamp}" if stamp else name
+
+
+def _render_subject(record: dict[str, Any]) -> str:
+    """The thing being tested, as the page's headline, with a sentence saying what it is."""
+    name, stamp, sentence = _subject(record)
+    stamp_html = f'<span class="stamp">{escape(stamp)}</span>' if stamp else ""
+    sentence_html = f'<p class="subject-what">{escape(sentence)}</p>' if sentence else ""
+    return f'<header class="subject"><h2>{escape(name)}{stamp_html}</h2>{sentence_html}</header>'
+
+
+def _subject(record: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    """The subject's name, its stamp (`skill`, or a plugin's version) and a sentence about it.
+    Runs recorded before subjects existed show only their test name."""
     subject = record.get("subject")
     if not subject:
-        return record["test_name"]
-    if subject["kind"] in ("skill", "trigger"):
-        return f"{subject['skill']} skill"
+        return record["test_name"], None, None
+    if subject.get("skill"):
+        return subject["skill"], "skill", _skill_sentence(subject, bool(record.get("trigger")))
+    if subject["kind"] == "plugins" and len(subject["plugins"]) == 1:
+        plugin = subject["plugins"][0]
+        return plugin["name"], plugin.get("version"), _plugin_sentence(plugin)
     if subject["kind"] == "plugins":
-        return ", ".join(_plugin_title(plugin) for plugin in subject["plugins"])
-    return "this repo's setup"
+        titles = ", ".join(_plugin_title(plugin) for plugin in subject["plugins"])
+        return titles, None, "Plugins under test, loaded together."
+    return "This repo's setup", None, _repo_sentence(subject)
 
 
 def _plugin_title(plugin: dict[str, Any]) -> str:
     return f"{plugin['name']} {plugin['version']}" if plugin.get("version") else plugin["name"]
 
 
-def _render_subject(record: dict[str, Any]) -> str:
-    """The thing being tested, as the page's headline, with a sentence saying what it is."""
-    subject = record.get("subject")
-    if not subject:
-        return f'<header class="subject"><h2>{escape(record["test_name"])}</h2></header>'
-    kind = subject["kind"]
-    if kind in ("skill", "trigger"):
-        name, stamp, sentence = subject["skill"], "skill", _skill_sentence(subject)
-    elif kind == "plugins" and len(subject["plugins"]) == 1:
-        plugin = subject["plugins"][0]
-        name, stamp, sentence = plugin["name"], plugin.get("version"), _plugin_sentence(plugin)
-    elif kind == "plugins":
-        titles = [_plugin_title(plugin) for plugin in subject["plugins"]]
-        name, stamp, sentence = ", ".join(titles), None, "Plugins under test, loaded together."
-    else:
-        name, stamp, sentence = "This repo's setup", None, _repo_sentence(subject)
-    stamp_html = f'<span class="stamp">{escape(stamp)}</span>' if stamp else ""
-    return (
-        f'<header class="subject"><h2>{escape(name)}{stamp_html}</h2>'
-        f'<p class="subject-what">{escape(sentence)}</p></header>'
-    )
-
-
-def _skill_sentence(subject: dict[str, Any]) -> str:
-    what = (
-        "Tests whether Claude picks this skill on its own"
-        if subject["kind"] == "trigger"
-        else "Skill under test"
-    )
+def _skill_sentence(subject: dict[str, Any], is_trigger: bool) -> str:
+    what = "Tests whether Claude picks this skill on its own" if is_trigger else "Skill under test"
     plugin = subject.get("plugin")
     return f"{what}, from the {_plugin_title(plugin)} plugin." if plugin else f"{what}."
 
@@ -403,7 +398,7 @@ def _plugin_sentence(plugin: dict[str, Any]) -> str:
     if skills:
         listed = ", ".join(skills[:_LISTED_SKILLS])
         more = f" and {len(skills) - _LISTED_SKILLS} more" if len(skills) > _LISTED_SKILLS else ""
-        parts.append(f"{_count(len(skills), 'skill')} ({listed}{more})")
+        parts.append(f"{plural(len(skills), 'skill')} ({listed}{more})")
     if agents:
         parts.append(
             f"the {agents[0]} agent" if len(agents) == 1 else f"agents {', '.join(agents)}"
@@ -415,7 +410,7 @@ def _repo_sentence(subject: dict[str, Any]) -> str:
     skills, agents = subject.get("skills") or [], subject.get("agents") or []
     if not skills and not agents:
         return "No skills or agents were found in the repo, so Claude worked with its defaults."
-    found = [_count(len(skills), "skill"), _count(len(agents), "agent")]
+    found = [plural(len(skills), "skill"), plural(len(agents), "agent")]
     return f"Everything the repo itself has: {' and '.join(found)}."
 
 
@@ -441,7 +436,7 @@ def _setup_sentence(record: dict[str, Any]) -> str:
     fixture = record.get("fixture")
     if fixture is None:
         where = "in an empty repo"
-    elif "://" in fixture or fixture.endswith(".git") or "@" in fixture.split("/")[0]:
+    elif is_git_url(fixture):
         where = f"on {_repo_address(fixture)}"
     else:
         where = f"on a copy of {Path(fixture).name}"
@@ -474,16 +469,12 @@ def _render_steps(record: dict[str, Any]) -> str:
         elif number > taken:
             state, note = "not-run", "not run"
         text_class = "step-text command" if text.startswith(("/", "!")) else "step-text"
-        shown = text if len(text) <= _SHOWN_STEP_CHARS else text[: _SHOWN_STEP_CHARS - 1] + "…"
+        shown = escape(shorten(text, _SHOWN_STEP_CHARS))
         items.append(
             f'<li class="{state}"><span class="{text_class}" title="{escape(text)}">'
-            f'{escape(shown)}</span><span class="note">{note}</span></li>'
+            f'{shown}</span><span class="note">{note}</span></li>'
         )
     return f'<ol class="steps" aria-label="Steps">{"".join(items)}</ol>'
-
-
-def _count(count: int, noun: str) -> str:
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def _render_page(views: list[_RunView]) -> str:
@@ -592,8 +583,7 @@ def _render_why_not_passed(record: dict[str, Any]) -> str:
     then what Claude said last."""
     if record["status"] == "pass":
         return ""
-    error = (record.get("error") or "").removeprefix(f"{record['test_file']}: ")
-    if error:
+    if error := run_error(record):
         steps = steps_taken(record)
         headline = f"Stopped at step {steps}" if steps else "Couldn't start"
         html = f'<p class="run-error"><strong>{escape(headline)}</strong><br>{escape(error)}</p>'

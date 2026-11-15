@@ -32,7 +32,7 @@ class TestHeading:
 class Progress(Protocol):
     def test_started(self, heading: TestHeading) -> None: ...
 
-    def step_started(self, text: str) -> None: ...
+    def step_started(self) -> None: ...
 
     def test_finished(self, record: dict[str, Any]) -> None: ...
 
@@ -46,17 +46,17 @@ def make_progress() -> Progress:
     return LiveProgress() if sys.stdout.isatty() else PlainProgress()
 
 
-def result_line(record: dict[str, Any], name_width: int) -> tuple[str, str]:
-    """A finished test's status and its line: name, verdict, time and cost."""
+def result_line(record: dict[str, Any], heading: TestHeading) -> str:
+    """A finished test's line: name, verdict, time and cost."""
     status = record["status"]
     cells = [
-        _title(record).ljust(name_width),
+        heading.title.ljust(heading.name_width),
         _STATUS_WORDS.get(status, status).ljust(6),
         format_seconds(record["duration_s"]).rjust(6),
     ]
     if record["trace"].get("cost_usd") is not None:
         cells.append(f"${record['trace']['cost_usd']:.2f}")
-    return status, "   ".join(cells)
+    return "   ".join(cells)
 
 
 def why_not_passed(record: dict[str, Any]) -> str | None:
@@ -64,18 +64,23 @@ def why_not_passed(record: dict[str, Any]) -> str | None:
     check. None when it passed."""
     if record["status"] == "pass":
         return None
-    if record.get("error"):
-        problem = record["error"].removeprefix(f"{record['test_file']}: ").splitlines()[0]
+    if error := run_error(record):
         steps = steps_taken(record)
+        problem = error.splitlines()[0]
         reason = f"stopped at step {steps}: {problem}" if steps else problem
-        return _shorten(reason, _REASON_CHARS)
-    checks = record["assertions"]
-    failed = [check for check in checks if not check["passed"]]
-    reason = f"{len(failed)} of {len(checks)} checks failed: {format_check(failed[0])}"
-    return _shorten(reason, _REASON_CHARS)
+    else:
+        checks = record["assertions"]
+        failed = [check for check in checks if not check["passed"]]
+        reason = f"{len(failed)} of {len(checks)} checks failed: {_format_check(failed[0])}"
+    return shorten(reason, _REASON_CHARS)
 
 
-def format_check(result: dict[str, Any]) -> str:
+def run_error(record: dict[str, Any]) -> str:
+    """The run's error without the test file it came from (already shown), or ''."""
+    return (record.get("error") or "").removeprefix(f"{record['test_file']}: ")
+
+
+def _format_check(result: dict[str, Any]) -> str:
     """A check as written in the test, e.g. `tool_order Read -> Edit`."""
     expected = result["expected"]
     if isinstance(expected, list):
@@ -98,12 +103,6 @@ def format_seconds(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
-def _title(record: dict[str, Any]) -> str:
-    if record.get("repeat_count", 1) > 1:
-        return f"{record['test_name']} #{record['repeat_index']}/{record['repeat_count']}"
-    return record["test_name"]
-
-
 def steps_taken(record: dict[str, Any]) -> int:
     """The prompt plus every answer acted on (sent, run, or /clear)."""
     if record.get("stop_reason") == "setup_failed":
@@ -112,8 +111,12 @@ def steps_taken(record: dict[str, Any]) -> int:
     return 1 + sum(1 for item in record["trace"]["items"] if item["kind"] in actions)
 
 
-def _shorten(text: str, limit: int) -> str:
+def shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 class LiveProgress:
@@ -138,13 +141,13 @@ class LiveProgress:
         )
         self._live.start()
 
-    def step_started(self, text: str) -> None:
+    def step_started(self) -> None:
         self._steps_started += 1
 
     def test_finished(self, record: dict[str, Any]) -> None:
         self.pause()
         self._live = None
-        status, line = result_line(record, self._heading.name_width)
+        status, line = record["status"], result_line(record, self._heading)
         self._console.print(Text(f"{_MARKS.get(status, '?')} {line}", style=_STYLES.get(status)))
         if (reason := why_not_passed(record)) is not None:
             self._console.print(Text(f"    {reason}", style="dim"))
@@ -170,39 +173,20 @@ class PlainProgress:
     """For pipes and CI: a line when each test starts and its result when it ends."""
 
     def __init__(self) -> None:
-        self._name_width = 0
+        self._heading = TestHeading("", None, 0)
 
     def test_started(self, heading: TestHeading) -> None:
-        self._name_width = heading.name_width
+        self._heading = heading
         print(f"...  {heading.title}", flush=True)
 
-    def step_started(self, text: str) -> None:
+    def step_started(self) -> None:
         pass
 
     def test_finished(self, record: dict[str, Any]) -> None:
-        status, line = result_line(record, self._name_width)
-        print(f"{_PLAIN_MARKS.get(status, '?   ')} {line}", flush=True)
+        mark = _PLAIN_MARKS.get(record["status"], "?   ")
+        print(f"{mark} {result_line(record, self._heading)}", flush=True)
         if (reason := why_not_passed(record)) is not None:
             print(f"       {reason}", flush=True)
-
-    def pause(self) -> None:
-        pass
-
-    def resume(self) -> None:
-        pass
-
-
-class SilentProgress:
-    """Shows nothing: for runs nobody is watching."""
-
-    def test_started(self, heading: TestHeading) -> None:
-        pass
-
-    def step_started(self, text: str) -> None:
-        pass
-
-    def test_finished(self, record: dict[str, Any]) -> None:
-        pass
 
     def pause(self) -> None:
         pass
