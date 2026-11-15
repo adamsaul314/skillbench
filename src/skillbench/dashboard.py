@@ -21,7 +21,6 @@ from skillbench.progress import (
     run_error,
     shorten,
     steps_taken,
-    why_not_passed,
 )
 from skillbench.workspace import is_git_url
 
@@ -230,6 +229,12 @@ summary::marker { color: var(--muted); }
 details details { border-style: dashed; margin-top: .4rem; }
 .children { margin: .7rem 0 0 .3rem; padding-left: .9rem; border-left: 2px solid var(--user); }
 
+.result-box { margin: 1.25rem 0 0; padding: .7rem 1rem; border-left: 4px solid currentColor;
+              background: var(--panel); max-width: 75ch; }
+.result-box strong { display: block; font: 600 1.15rem var(--display); }
+.result-box p { margin: .3rem 0 0; color: var(--ink); }
+.more { margin-top: 2.5rem; }
+.more > summary { font: 600 1rem var(--display); }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 """
 
@@ -325,10 +330,14 @@ def _detail_id(run_id: str) -> str:
 
 
 def _render_detail(run_id: str, record: dict[str, Any]) -> str:
-    """A run's page: what it tests and how, first; then its results."""
+    """A run's page, answer first: whether it passed and why, then what happened step by step,
+    the checks, Claude's last message, the numbers, and the full detail collapsed at the end."""
     return (
         f'<section class="run-detail" id="{escape(_detail_id(run_id))}">'
-        f"{_render_subject(record)}{_render_test(record)}{_render_run_detail(record)}</section>"
+        f"{_render_subject(record)}{_render_test_line(record)}{_render_verdict(record)}"
+        f"{_render_steps(record)}{_render_assertions(record['assertions'])}"
+        f"{_render_last_message(record)}{_render_readout(record)}{_render_details(record)}"
+        "</section>"
     )
 
 
@@ -402,8 +411,8 @@ def _repo_sentence(subject: dict[str, Any]) -> str:
     return f"Everything the repo itself has: {' and '.join(found)}."
 
 
-def _render_test(record: dict[str, Any]) -> str:
-    """The test: its name and status, its description, where it ran, and its steps."""
+def _render_test_line(record: dict[str, Any]) -> str:
+    """The test's name and status, what it checks, and where it ran."""
     status = record["status"]
     description = record.get("description")
     html = (
@@ -415,7 +424,7 @@ def _render_test(record: dict[str, Any]) -> str:
         html += f'<p class="description">{escape(description)}</p>'
     if record.get("kind"):
         html += f'<p class="setup">{escape(_setup_sentence(record))}</p>'
-    return html + _render_steps(record)
+    return html
 
 
 def _setup_sentence(record: dict[str, Any]) -> str:
@@ -442,8 +451,8 @@ def _repo_address(fixture: str) -> str:
 
 
 def _render_steps(record: dict[str, Any]) -> str:
-    """The prompt and every answer, numbered. The step a failed run stopped at is marked, and
-    steps after it show as not run."""
+    """What happened, step by step, in plain words. The step a failed run stopped at is marked,
+    and the steps after it show as not run."""
     if "planned_answers" not in record or not record.get("prompt"):
         return ""
     steps = [record["prompt"], *record["planned_answers"]]
@@ -456,13 +465,24 @@ def _render_steps(record: dict[str, Any]) -> str:
             state, note = "stopped", "stopped here"
         elif number > taken:
             state, note = "not-run", "not run"
-        text_class = "step-text command" if text.startswith(("/", "!")) else "step-text"
-        shown = escape(shorten(text, _SHOWN_STEP_CHARS))
+        label = _step_label(text, is_prompt=number == 1)
+        shown = escape(shorten(label, _SHOWN_STEP_CHARS))
         items.append(
-            f'<li class="{state}"><span class="{text_class}" title="{escape(text)}">'
-            f'{shown}</span><span class="note">{note}</span></li>'
+            f'<li class="{state}"><span class="step-text" title="{escape(label)}">{shown}</span>'
+            f'<span class="note">{note}</span></li>'
         )
-    return f'<ol class="steps" aria-label="Steps">{"".join(items)}</ol>'
+    return f'<h3>What happened</h3><ol class="steps" aria-label="Steps">{"".join(items)}</ol>'
+
+
+def _step_label(text: str, is_prompt: bool) -> str:
+    """A step in plain words: what was sent to Claude, run in the repo, or cleared."""
+    if text == "/clear":
+        return "Started a fresh session"
+    if text.startswith("!"):
+        return f"Ran in the repo: {text[1:].strip()}"
+    if text.startswith("/"):
+        return f"Ran {text}"
+    return f"Asked Claude: {text}" if is_prompt else f"Answered: {text}"
 
 
 def _render_page(views: list[_RunView]) -> str:
@@ -536,14 +556,48 @@ def _css_string(value: str) -> str:
 # --- one run's detail: readout, assertions and timeline --------------------------------
 
 
-def _render_run_detail(record: dict[str, Any]) -> str:
-    """Why it didn't pass, the checks, the numbers, then the full timeline of one run."""
+def _render_verdict(record: dict[str, Any]) -> str:
+    """The answer first: whether the test passed and, if not, the step it stopped at or the
+    checks that failed."""
+    status = record["status"]
+    assertions = record["assertions"]
+    if status == "pass":
+        headline = "Passed"
+        detail = (
+            f"All {plural(len(assertions), 'check')} passed."
+            if assertions
+            else "Every step finished."
+        )
+    elif error := run_error(record):
+        steps = steps_taken(record)
+        headline = f"Stopped at step {steps}" if steps else "Couldn't start"
+        detail = next(iter(error.splitlines()), "").strip() or error.strip()
+    else:
+        failed = sum(1 for result in assertions if not result["passed"])
+        headline = f"Failed: {failed} of {len(assertions)} checks didn't pass"
+        detail = "The checks below show which ones, and why."
     return (
-        f"{_render_why_not_passed(record)}"
-        f"{_render_assertions(record['assertions'])}"
-        f"{_render_readout(record)}"
-        "<h3>Timeline</h3>"
-        f"{_render_timeline(record['trace']['items'])}"
+        f'<div class="result-box status-{escape(status)}"><strong>{escape(headline)}</strong>'
+        f"<p>{escape(detail)}</p></div>"
+    )
+
+
+def _render_last_message(record: dict[str, Any]) -> str:
+    """What Claude said last: the part most people read after the verdict."""
+    last_message = final_text(record["trace"]["items"])
+    if not last_message:
+        return ""
+    return "<h3>Claude's last message</h3>" + f'<div class="text">{escape(last_message)}</div>'
+
+
+def _render_details(record: dict[str, Any]) -> str:
+    """The rest, collapsed: the full error, then the timeline of every message and tool call."""
+    error = run_error(record)
+    error_html = f"<h4>Full error</h4><pre>{escape(error)}</pre>" if error else ""
+    return (
+        '<details class="more"><summary>Full timeline and raw output</summary>'
+        f"{error_html}<h3>Timeline</h3>{_render_timeline(record['trace']['items'])}"
+        "</details>"
     )
 
 
@@ -582,26 +636,6 @@ def _render_readout(record: dict[str, Any]) -> str:
     return f'<dl class="meter">{cells}</dl>{_render_workspace(record)}'
 
 
-def _render_why_not_passed(record: dict[str, Any]) -> str:
-    """For a run that didn't pass: where it stopped and the full error, or which checks failed;
-    then what Claude said last."""
-    if record["status"] == "pass":
-        return ""
-    if error := run_error(record):
-        steps = steps_taken(record)
-        headline = f"Stopped at step {steps}" if steps else "Couldn't start"
-        html = f'<p class="run-error"><strong>{escape(headline)}</strong><br>{escape(error)}</p>'
-    else:
-        html = f'<p class="run-error"><strong>{escape(why_not_passed(record) or "")}</strong></p>'
-    last_message = final_text(record["trace"]["items"])
-    if last_message:
-        html += (
-            "<h4>Claude's last message</h4>"
-            f'<div class="item"><div class="text">{escape(last_message)}</div></div>'
-        )
-    return html
-
-
 def _render_workspace(record: dict[str, Any]) -> str:
     """The temp folder the run worked in, kept so its files can be opened."""
     if not record.get("workspace"):
@@ -615,19 +649,52 @@ def _render_assertions(results: list[dict[str, Any]]) -> str:
     passed = sum(1 for result in results if result["passed"])
     entries = "".join(_render_assertion(result) for result in results)
     return (
-        f'<h3>Assertions<span class="tally">{passed} of {len(results)} passed</span></h3>'
+        f'<h3>Checks<span class="tally">{passed} of {len(results)} passed</span></h3>'
         f'<ul class="assertions">{entries}</ul>'
     )
 
 
 def _render_assertion(result: dict[str, Any]) -> str:
     outcome = "pass" if result["passed"] else "fail"
-    expected = json.dumps(result["expected"])
+    reason = "" if result["passed"] else f'<span class="reason">{escape(result["reason"])}</span>'
     return (
         f'<li class="{outcome}"><span class="verdict">{outcome}</span>'
-        f"<code>{escape(result['type'])}: {escape(expected)}</code>"
-        f'<span class="reason">{escape(result["reason"])}</span></li>'
+        f"<span>{escape(_check_sentence(result))}</span>{reason}</li>"
     )
+
+
+# Each check in plain words: the first form when it held, the second when it didn't.
+_CHECK_WORDING = {
+    "skill_invoked": ("Claude used the {} skill", "Claude never used the {} skill"),
+    "skill_not_invoked": ("Claude didn't use the {} skill", "Claude used the {} skill"),
+    "subagent_invoked": ("Claude handed work to the {} agent", "Claude never used the {} agent"),
+    "tool_not_called": ("Claude didn't use {}", "Claude used {}"),
+    "final_text_contains": (
+        'Claude\'s last message contains "{}"',
+        'Claude\'s last message lacks "{}"',
+    ),
+    "command_succeeds": ("{} runs successfully", "{} doesn't run successfully"),
+}
+
+
+def _check_sentence(result: dict[str, Any]) -> str:
+    """A check as a plain sentence, saying whether it held."""
+    kind, expected, passed = result["type"], result["expected"], result["passed"]
+    if kind == "tool_order":
+        order = " → ".join(map(str, expected))
+        said = (
+            "Claude used the tools in order: "
+            if passed
+            else "Claude didn't use the tools in order: "
+        )
+        return said + order
+    if kind == "file_contains":
+        verb = "contains" if passed else "doesn't contain"
+        return f'{expected["path"]} {verb} "{expected["text"]}"'
+    if kind in _CHECK_WORDING:
+        said, not_said = _CHECK_WORDING[kind]
+        return (said if passed else not_said).format(expected)
+    return f"{kind}: {json.dumps(expected)}"
 
 
 def _render_timeline(items: list[dict[str, Any]]) -> str:
