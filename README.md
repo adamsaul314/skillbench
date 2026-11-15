@@ -1,243 +1,193 @@
 # skillbench
 
-Test your agent skills, and whole agent loops, the way you test code.
+Test your Claude Code skills and agent workflows, the way you test code.
 
-skillbench runs **Claude Code** headless against a copy of your repo. It records every turn, tool call and skill the agent used, and checks what happened against the assertions you wrote.
-
-```
-$ skillbench init
-$ skillbench skill
-skillbench: 2 tests = 2 runs
-test                      status  duration  turns
-hello-greets-by-name      pass    8.2s      2
-hello [should] say hi...  pass    3.1s      1
-dashboard: skillbench/runs/index.html
-```
+You write a small YAML file that says *"send this to Claude, then check these things"*. skillbench runs Claude Code for real on a copy of your repo, records everything it did, and tells you **pass** or **fail**.
 
 ---
 
-## Install
+## 1. Install
 
-You need **Python 3.11+**, **git**, **[uv](https://docs.astral.sh/uv/)**, and Claude Code installed and logged in (`claude --version`). It works on macOS, Linux and Windows.
+You need [uv](https://docs.astral.sh/uv/), git, and Claude Code installed and logged in (check with `claude --version`).
 
 ```
 uv tool install /path/to/skillbench
-skillbench --help
 ```
 
-## Quick start
+## 2. Try it (2 minutes)
 
-Run this in the repo where your skills or agent setup live:
-
-```
-skillbench init        # creates skillbench/ with defaults, sample tests and a sample repo
-skillbench skill       # runs skillbench/skills/*.yaml
-skillbench agent       # runs skillbench/agent/*.yaml
-```
-
-The samples run as they are, against `skillbench/fixtures/sample-repo`. Change `fixture:` to `.` to test against your own repo instead.
-
-Everything skillbench creates lives in one folder, so your repo stays clean:
+In your repo:
 
 ```
-skillbench/
-  skillbench.yaml      defaults for every test
-  skills/              skill tests
-  agent/               agent loop tests
-  fixtures/            sample repos (optional)
-  runs/                results and the dashboard (git-ignored)
+skillbench init      # creates a skillbench/ folder with two example tests
+skillbench skill     # runs the skill test
+skillbench agent     # runs the agent test
 ```
 
-Commands find `skillbench/` from any folder inside your repo, the way git finds `.git`.
+You'll see something like:
+
+```
+[1/1] hello-greets-by-name  default model
+hello-greets-by-name: pass in 2.3s
+dashboard: skillbench/runs/index.html
+```
+
+Open `skillbench/runs/index.html` in your browser to see exactly what Claude did: every message, tool call and check.
+
+That's it. The rest of this page shows how to write your own tests.
 
 ---
 
-## Skill tests
+## 3. Two kinds of test
 
-A skill test invokes one skill directly and checks what it did.
+| | **Skill test** | **Agent test** |
+|---|---|---|
+| Question it answers | "When my skill runs, does it do the right thing?" | "Given a normal request, does Claude pick the right skills and get the job done?" |
+| Lives in | `skillbench/skills/` | `skillbench/agent/` |
+| Run with | `skillbench skill` | `skillbench agent` |
+| You write | `skill:` and `input:` | `prompt:` |
 
-`skillbench/skills/grilling.yaml`:
+### A skill test
+
+`skillbench/skills/grilling.yaml`
 
 ```yaml
-name: grilling-asks-questions
-skill: grilling                 # the skill's name, or its path in the repo
-input: an idea for a todo app   # the text after the /command
-fixture: .                      # this repo
+skill: grilling                 # your skill's name
+input: an idea for a todo app   # what to send it
+fixture: .                      # run it on a copy of this repo
+
 assert:
-  - skill_invoked: grilling
   - final_text_contains: "Q1"
   - tool_not_called: Write
 ```
 
-You never write the `/command` yourself. skillbench finds the skill in the repo, looking in `.claude/skills/`, `skills/`, `.github/skills/` and any plugin (a folder with `.claude-plugin/plugin.json`), and builds the command, e.g. `/my-plugin:grilling` for a plugin's skill.
+skillbench finds the skill wherever it lives in your repo (`.claude/skills/`, `skills/`, `.github/skills/` or a plugin) and runs it as `/grilling an idea for a todo app`.
 
-If two skills share a name, skillbench lists them. In that case write `plugin:skill` or the skill's path (`skill: plugins/mine/skills/grilling`).
+### An agent test
 
-### Trigger tests
-
-Trigger tests check whether the skill's description makes the agent pick it without being told:
+`skillbench/agent/csv-export.yaml`
 
 ```yaml
-name: grilling
-skill: grilling
-triggers:
-  should: ["stress-test my plan", "grill me on this design"]
-  should_not: ["fix this typo"]
-```
-
-Each prompt is its own short run, sent as plain text with no `/command`. A run stops as soon as the agent calls a skill, so trigger tests are cheap. A `should` prompt passes if the skill fired, and a `should_not` prompt passes if it didn't. If you also set `input:`, the forced run happens as well.
-
-## Agent loop tests
-
-An agent loop test uses a normal prompt and forces nothing. The agent works with every skill and plugin in the repo, and you check that it chose the right ones and finished the job.
-
-`skillbench/agent/csv-export.yaml`:
-
-```yaml
-name: csv-export
 prompt: add CSV export to the report page
 fixture: .
-answers:                                  # replies sent one per turn when the agent asks
-  - Yes to all your recommendations, including any further questions.
+
+answers:                       # replies, sent one at a time when Claude asks something
+  - Yes to all your recommendations.
   - approved
-timeout_s: 1800
+
 assert:
   - skill_invoked: planner
-  - skill_not_invoked: grilling
-  - tool_order: [Read, Edit, Bash]        # in this order; other calls in between are fine
+  - tool_order: [Read, Edit, Bash]
   - command_succeeds: python -m pytest -q
 ```
 
-Tips:
-- **Put the names you assert on in the prompt** (a slug, a file name) so paths are predictable.
-- **Make answers forgiving.** "Yes to all your recommendations, including any further questions" holds up better than "yes".
-- Long loops cost real money. Get your skill tests passing first.
-
-### Answering live
-
-Set `interactive: true` to answer the agent yourself, as in a real session. Once the scripted answers run out, skillbench shows the agent's last message and you type the reply. An empty reply or `/done` ends the conversation.
+Nothing is forced here. Claude sees every skill in your repo and decides for itself, and the test checks what it chose.
 
 ---
 
-## Fixtures: what repo the agent works in
+## 4. Checks you can make
 
-Each run gets a fresh temp folder that holds the fixture, so your real files are never touched. The folder is kept afterwards so you can inspect it.
+Put any of these under `assert:`.
 
-| `fixture:` | What you get |
+| Check | Passes when |
 |---|---|
-| *(omitted)* | An empty git repo (greenfield) |
-| `.` | A copy of this repo, including uncommitted and untracked files. Git-ignored files and the `skillbench/` folder are left out. |
-| `path/in/repo` | A copy of that folder |
-| `https://github.com/you/app.git` | A clone of the default branch |
-| `{git: <url>, ref: v1.2}` | A clone checked out at a branch, tag or commit |
+| `skill_invoked: grilling` | Claude used that skill |
+| `skill_not_invoked: grilling` | Claude didn't use that skill |
+| `tool_order: [Read, Edit]` | Claude used these tools in this order (other tools in between are fine) |
+| `tool_not_called: Write` | Claude never used that tool |
+| `final_text_contains: "Done"` | Claude's last message contains the text |
+| `file_contains: {path: notes.md, text: "approved"}` | That file exists afterwards and contains the text |
+| `command_succeeds: python -m pytest -q` | The command runs successfully in the workspace afterwards |
 
-Paths are relative to the repo root (the folder that holds `skillbench/`).
+A test passes when every check passes.
 
-The exact commit each run used is recorded and shown in the dashboard. Pin a `ref` when you want results that don't move with `main`. Private repos use the git credentials you already have. If a clone fails, that test is reported as `error` and the rest of the suite carries on.
+---
 
-> **Heads-up:** the agent has full tool access inside the workspace, and `command_succeeds` runs commands there. Only use fixture repos you trust.
+## 5. Which repo Claude works in (`fixture:`)
 
-## Running tests
+Claude always works on a **copy**, so your real files are never touched.
+
+| `fixture:` | Claude gets |
+|---|---|
+| *(leave it out)* | An empty folder |
+| `.` | A copy of your repo, including work you haven't committed |
+| `some/folder` | A copy of that folder |
+| `https://github.com/you/app.git` | A fresh clone |
+| `{git: https://github.com/you/app.git, ref: v1.2}` | A clone at that branch, tag or commit |
+
+Paths are relative to your repo root. The copy is kept after the run so you can look inside, and its path is in the dashboard.
+
+---
+
+## 6. Running tests
 
 ```
-skillbench skill                    # every skill test
-skillbench skill grilling           # tests named grilling, in grilling.yaml, or testing skill grilling
-skillbench agent csv-export
-skillbench agent path/to/t.yaml     # or a folder
+skillbench skill                 # all skill tests
+skillbench skill grilling        # just the tests for one skill (or one test by name)
+skillbench agent csv-export      # one agent test
+skillbench agent --repeat 5      # run each test 5 times
 skillbench agent --model claude-sonnet-5-5
 ```
 
-`--model` is passed to `claude` as given. The exit code is `0` only if every test passed. The dashboard is rewritten after every run.
-
-While tests run, the terminal shows the current test, turn, latest tool call, elapsed time, and an overall bar with an estimated finish time. The estimate comes from the last recorded run of the same test, or else from the tests finished so far. When there's nothing to base it on yet, only elapsed time is shown. When output isn't a terminal (CI, pipes), you get one plain line per run instead.
-
-### Repeats
-
-Agents aren't deterministic: one run can pass by luck or fail by bad luck. Repeats show how reliable a test really is:
-
-```
-skillbench skill --repeat 5
-```
-
-```
-skillbench: 3 tests × 5 repeats = 15 runs
-...
-grilling-asks-questions: 4/5 runs passed, needs 100% -> fail
-  skill_invoked: grilling  5/5
-  final_text_contains: Q1  4/5
-```
-
-The default is 1, so nobody pays for repeats by accident. Every repeat uses real quota. You can also set `repeat:` per test or in `skillbench.yaml`, and the flag wins. A repeated test passes when its pass rate is at least `min_pass_rate`. The default of 1.0 means every run must pass; set 0.8 to allow one flaky run in five.
-
-## Reading the results
-
-Open `skillbench/runs/index.html` in a browser. It needs no server and no network. Click a run to see its timeline: your messages, the agent's text, every tool call with its input and output, subagents nested under their parent, and each assertion with the reason it passed or failed.
-
-| Status | Meaning |
-|---|---|
-| `pass` | Run finished and every assertion passed |
-| `fail` | Run finished but an assertion failed |
-| `error` | The agent crashed or timed out, or the fixture or skill couldn't be set up |
+While it runs you'll see the current test, what Claude is doing, and roughly how long is left.
 
 ---
 
-## Reference
+## 7. More options
 
-### Test fields
+You won't need these to start.
 
-| Key | What it does | Default |
-|---|---|---|
-| `skill` | Skill tests: the skill to invoke, by name, `plugin:skill` or path | |
-| `input` | Skill tests: the text after the skill's `/command` | `""` |
-| `triggers` | Skill tests: `should` / `should_not` prompt lists | |
-| `prompt` | Agent loop tests: the first message | |
-| `name` | Name shown in results | file name |
-| `fixture` | The repo the agent works in (see Fixtures) | `skillbench.yaml`, else empty |
-| `answers` | Scripted replies, one per turn | `[]` |
-| `interactive` | Ask in the terminal once scripted answers run out | `false` |
-| `timeout_s` | Seconds before a turn is stopped | `600` |
-| `repeat` | Runs per invocation | `1` |
-| `min_pass_rate` | With repeats: the share of runs that must pass | `1.0` |
-| `assert` | List of checks | `[]` |
+**Check a skill gets picked on its own.** List prompts that should and shouldn't trigger it. Each runs briefly and stops as soon as Claude decides:
 
-A test has either `skill` or `prompt`. Precedence is CLI flag, then the test, then `skillbench.yaml`, then the built-in default.
+```yaml
+skill: grilling
+triggers:
+  should: ["stress-test my plan"]
+  should_not: ["fix this typo"]
+```
 
-### Assertions
+**Answer Claude yourself.** Add `interactive: true` and skillbench asks *you* in the terminal whenever Claude is waiting for a reply. Press Enter on an empty line to finish.
 
-| Assertion | Passes when |
-|---|---|
-| `skill_invoked: grilling` | The skill ran, through the Skill tool or a `/skill` message. `grilling` also matches `my-plugin:grilling`. |
-| `skill_not_invoked: grilling` | The skill never ran |
-| `tool_not_called: Write` | The tool was never called (subagents included) |
-| `tool_order: [Read, Edit, Bash]` | Those tools were called in that order, with anything in between. `[Bash]` checks a tool was called at all. |
-| `final_text_contains: "Q1"` | The agent's last message contains the text |
-| `file_contains: {path: docs/plan.md, text: "approved"}` | The file exists in the workspace and contains the text |
-| `command_succeeds: python -m pytest -q` | The command exits 0 in the workspace |
+**Check for flakiness.** Claude doesn't do exactly the same thing every time. `--repeat 5` (or `repeat: 5` in the test) runs it 5 times and shows how often each check passed. Add `min_pass_rate: 0.8` to pass when 4 out of 5 runs pass.
 
-`command_succeeds` runs through the platform shell: `sh` on macOS and Linux, `cmd` on Windows. For portable tests, use commands that work in both. Typos in assertions are caught before anything runs.
-
-### skillbench.yaml
+**Set defaults for every test** in `skillbench/skillbench.yaml`:
 
 ```yaml
 model: claude-sonnet-5-5
-timeout_s: 600
+timeout_s: 600        # seconds before a turn is stopped
+fixture: .
 repeat: 1
 min_pass_rate: 1.0
-fixture: .
 ```
 
-### How skillbench runs Claude Code
+A test's own settings win over these, and command-line flags win over both.
 
-- Each turn runs `claude -p ... --output-format stream-json`, and later turns resume the same session. Every plugin found in the workspace is passed with `--plugin-dir`.
-- **Isolation:** every run ignores your personal config, so a global skill can't make a test pass or fail. With `ANTHROPIC_API_KEY` set it uses `--bare`; otherwise it keeps your login but drops personal settings and MCP servers.
-- The agent can't stop to ask questions mid-turn (`AskUserQuestion` is disabled); skillbench answers between turns instead.
-- Raw output for every turn is in `skillbench/runs/<id>/raw/`.
+**All test fields:**
+
+| Field | Meaning |
+|---|---|
+| `skill` / `input` | Skill tests: which skill, and what to send it |
+| `prompt` | Agent tests: the first message |
+| `answers` | Replies sent one per turn |
+| `interactive` | Ask you in the terminal for replies |
+| `triggers` | Prompts that should / shouldn't pick the skill |
+| `fixture` | Which repo Claude works in |
+| `assert` | The checks |
+| `name` | A display name (defaults to the file name) |
+| `timeout_s`, `repeat`, `min_pass_rate` | As above |
 
 ---
 
-## Developing skillbench
+## Good to know
 
-```
-uv run ruff check .
-uv run ruff format .
-```
+- **It costs real usage.** Every run is a real Claude session. Start with skill tests; long agent tests take longer and cost more.
+- **Your personal setup is ignored.** Only the skills and plugins in the repo being tested are loaded, so results don't depend on whose machine runs them.
+- **Only test repos you trust.** Claude has full tool access inside the copy, and `command_succeeds` runs commands there.
+- **`command_succeeds` uses your system shell** (`sh` on Mac/Linux, `cmd` on Windows), so keep commands simple if you share tests across systems.
+- **Results** are in `skillbench/runs/`, which is git-ignored. Each run has a `run.json` and Claude's raw output.
+
+| Status | Meaning |
+|---|---|
+| `pass` | Every check passed |
+| `fail` | Claude finished, but a check failed |
+| `error` | Claude crashed or timed out, or the skill or fixture couldn't be found |

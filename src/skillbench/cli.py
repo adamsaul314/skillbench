@@ -220,7 +220,7 @@ def _run_all(
         )
         result.records.append(record)
     print(_summary(list(results.values())))
-    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
+    print(f"dashboard: {_shown_path(runs_root / INDEX_FILE_NAME)}")
     is_all_passed = all(result.status == "pass" for result in results.values())
     return _EXIT_OK if is_all_passed else _EXIT_RUN_FAILED
 
@@ -305,6 +305,14 @@ def _format_expected(expected: Any) -> str:
     if isinstance(expected, dict):
         return ", ".join(f"{key}={value}" for key, value in expected.items())
     return str(expected)
+
+
+def _shown_path(path: Path) -> str:
+    """Relative to where the command was run, when it's below there."""
+    try:
+        return path.relative_to(Path.cwd()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _shorten(text: str, limit: int) -> str:
