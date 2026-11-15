@@ -93,6 +93,10 @@ All fields: `name`, `skill`, `input`, `triggers` (with `should` / `should_not`),
 
 Prefer checks on **outcomes** (files written, tests passing, the right skill or subagent used) over exact wording or long tool sequences, which break easily. A skill that should only ask questions gets `tool_not_called: Write` and `tool_not_called: Edit`.
 
+**Copy exact text for `file_contains`.** When the file is one a skill writes from a template (a plan, a review), open that template in the skill's folder and copy the text as it will appear, Markdown included: if the template has `- **approval:** awaiting-approval`, check for `"**approval:** approved"`, not `"approval: approved"`. Never guess a file's format.
+
+**Decide what "passed" means, and say so.** A check for a review verdict passes either way if it only looks for the word "Verdict". Check for the verdict you expect (e.g. `PASS`) when the test should only pass on a clean result, and tell the user which you chose.
+
 ## Workflows (several steps)
 
 `answers:` is the script of what the user would do after each of Claude's turns, written as they would type it in Claude Code:

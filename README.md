@@ -221,7 +221,7 @@ skillbench agent --repeat 5      # run each test 5 times
 skillbench agent --model claude-sonnet-5-5
 ```
 
-While it runs you'll see the current test, what Claude is doing, and roughly how long is left.
+While a test runs you'll see its steps as a checklist (done, running, still to come), what Claude is doing right now in plain words ("Editing script.js", "Running node --test"), each step's time and cost, and roughly how long is left. When it finishes, any failed checks are shown right there, with the reason.
 
 ---
 

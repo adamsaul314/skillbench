@@ -1,49 +1,361 @@
-"""What the terminal shows while runs go: a live status with the current turn, the latest tool
-call, elapsed time, an overall bar and an ETA; or, when output isn't a terminal, plain lines."""
+"""What the terminal shows while tests run: each test's steps as a checklist, what Claude is
+doing right now in plain words, and each test's result with any failed checks. When output
+isn't a terminal, plain lines instead."""
 
 import json
 import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path, PurePath
+from typing import Any, Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
 _RUN_RECORD_FILE_NAME = "run.json"
 _REFRESHES_PER_SECOND = 4
-# The bar never shows a run as done before it is, however long it overruns its estimate.
-_MAX_RUN_FRACTION = 0.95
-_BAR_WIDTH = 30
+_SHOWN_ACTIONS = 3  # the running step's latest actions
+_ACTION_TEXT_CHARS = 70
+_PASSED_CHECKS_SHOWN = 3  # a failed test lists this many passed checks, then counts the rest
+_STEP_MARKS = {"done": "✓", "failed": "✗", "running": "●", "pending": "○"}
+_STEP_STYLES = {"done": "green", "failed": "red", "running": "yellow", "pending": "dim"}
+_PLAIN_MARKS = {"done": "[ok]  ", "failed": "[FAIL]"}
+_STATUS_WORDS = {"pass": "passed", "fail": "failed", "error": "error"}
 
 
 @dataclass(frozen=True)
-class RunHeading:
+class TestHeading:
     """What is about to run."""
 
     index: int  # 1-based position among all runs of this invocation
     total: int
     test_name: str
     model: str | None
-    planned_turns: int | None  # the prompt plus scripted answers; None if not known up front
+    steps: list[str]  # the planned steps: the prompt, then each scripted answer
     repeat_index: int = 1
     repeat_count: int = 1
 
+    @property
+    def title(self) -> str:
+        if self.repeat_count == 1:
+            return self.test_name
+        return f"{self.test_name} (repeat {self.repeat_index}/{self.repeat_count})"
+
 
 class Progress(Protocol):
-    def run_started(self, heading: RunHeading, eta: "Eta") -> None: ...
+    def test_started(self, heading: TestHeading, eta: "Eta") -> None: ...
 
-    def activity(self, turn: int, last_tool: str | None) -> None: ...
+    def step_started(self, text: str) -> None: ...
 
-    def run_finished(self, line: str) -> None: ...
+    def action(self, description: str) -> None: ...
+
+    def step_finished(self, detail: str, is_ok: bool = True) -> None: ...
+
+    def test_finished(self, record: dict[str, Any]) -> None: ...
 
     def pause(self) -> None: ...
 
     def resume(self) -> None: ...
+
+
+def make_progress() -> Progress:
+    """Live in a terminal, plain lines otherwise."""
+    return LiveProgress() if sys.stdout.isatty() else PlainProgress()
+
+
+# --- describing what Claude does -----------------------------------------------------------
+
+
+def describe_tool_call(call: dict[str, Any], workspace: Path) -> str:
+    """A tool call in plain words, e.g. `Editing script.js` or `Running node --test`."""
+    name = call["name"]
+    tool_input = call["input"] if isinstance(call["input"], dict) else {}
+    path = _workspace_relative(tool_input.get("file_path") or tool_input.get("path"), workspace)
+    agent = tool_input.get("subagent_type") or tool_input.get("description", "")
+    descriptions = {
+        "Read": f"Reading {path}",
+        "Write": f"Writing {path}",
+        "Edit": f"Editing {path}",
+        "MultiEdit": f"Editing {path}",
+        "NotebookEdit": f"Editing {path}",
+        "Bash": f"Running {_one_line(tool_input.get('command'))}",
+        "PowerShell": f"Running {_one_line(tool_input.get('command'))}",
+        "Grep": f"Searching for {_one_line(tool_input.get('pattern'))}",
+        "Glob": f"Finding files {_one_line(tool_input.get('pattern'))}",
+        "Skill": f"Using skill {tool_input.get('skill', '')}",
+        "Agent": f"Subagent {agent}",
+        "Task": f"Subagent {agent}",
+        "TodoWrite": "Updating its to-do list",
+        "WebFetch": f"Fetching {tool_input.get('url', '')}",
+        "WebSearch": f"Searching the web for {_one_line(tool_input.get('query'))}",
+    }
+    return _shorten(descriptions.get(name, f"Using {name}").strip(), _ACTION_TEXT_CHARS)
+
+
+def _workspace_relative(raw_path: Any, workspace: Path) -> str:
+    if not isinstance(raw_path, str) or not raw_path:
+        return ""
+    path = PurePath(raw_path)
+    for root in (workspace, workspace.resolve()):
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return path.name if path.is_absolute() else path.as_posix()
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# --- a finished test -----------------------------------------------------------------------
+
+
+def result_lines(record: dict[str, Any]) -> list[tuple[str, str]]:
+    """A finished test as (kind, text) lines, kind being `done`, `failed` or `info`: a heading,
+    any error, then its checks, listing every failed one with the reason."""
+    status = record["status"]
+    title = record["test_name"]
+    if record.get("repeat_count", 1) > 1:
+        title += f" (repeat {record['repeat_index']}/{record['repeat_count']})"
+    facts = [_STATUS_WORDS.get(status, status), format_seconds(record["duration_s"])]
+    if record["trace"].get("cost_usd") is not None:
+        facts.append(f"${record['trace']['cost_usd']:.2f}")
+    facts.append(_plural(_step_count(record), "step"))
+    lines = [("done" if status == "pass" else "failed", f"{title}   {'  ·  '.join(facts)}")]
+    if record.get("error"):
+        error = record["error"].removeprefix(f"{record['test_file']}: ")
+        lines.append(("failed", f"    {error}"))
+    return lines + _check_lines(record["assertions"])
+
+
+def _check_lines(results: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    if not results:
+        return []
+    failed = [result for result in results if not result["passed"]]
+    if not failed:
+        return [("done", f"    all {_plural(len(results), 'check')} passed")]
+    lines = []
+    for result in failed:
+        lines.append(("failed", f"    {format_check(result)}"))
+        lines.append(("info", f"        {result['reason']}"))
+    passed = [result for result in results if result["passed"]]
+    lines += [("done", f"    {format_check(result)}") for result in passed[:_PASSED_CHECKS_SHOWN]]
+    if len(passed) > _PASSED_CHECKS_SHOWN:
+        more = _plural(len(passed) - _PASSED_CHECKS_SHOWN, "more check")
+        lines.append(("info", f"    + {more} passed"))
+    return lines
+
+
+def format_check(result: dict[str, Any]) -> str:
+    """A check as written in the test, e.g. `tool_order: Read -> Edit`."""
+    expected = result["expected"]
+    if isinstance(expected, list):
+        expected = " -> ".join(map(str, expected))
+    elif isinstance(expected, dict):
+        expected = " ".join(
+            repr(value) if key == "text" else str(value) for key, value in expected.items()
+        )
+    return f"{result['type']}: {expected}"
+
+
+def _step_count(record: dict[str, Any]) -> int:
+    actions = ("user_message", "user_command", "new_session")
+    return 1 + sum(1 for item in record["trace"]["items"] if item["kind"] in actions)
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+# --- the steps of the running test ---------------------------------------------------------
+
+
+@dataclass
+class _Step:
+    text: str
+    state: str = "pending"  # pending, running, done or failed
+    detail: str = ""
+    started: float = 0.0
+
+
+@dataclass
+class _Checklist:
+    """The running test's steps, started in order. A step beyond the plan (a live answer) is
+    added at the end; a started step takes the text actually sent."""
+
+    steps: list[_Step] = field(default_factory=list)
+    actions: deque[str] = field(default_factory=lambda: deque(maxlen=_SHOWN_ACTIONS))
+    started_count: int = 0
+
+    @classmethod
+    def planned(cls, texts: list[str]) -> "_Checklist":
+        return cls(steps=[_Step(text) for text in texts])
+
+    @property
+    def running(self) -> _Step | None:
+        index = self.started_count - 1
+        if 0 <= index < len(self.steps) and self.steps[index].state == "running":
+            return self.steps[index]
+        return None
+
+    def start(self, text: str) -> None:
+        if self.started_count >= len(self.steps):
+            self.steps.append(_Step(text))
+        step = self.steps[self.started_count]
+        step.text, step.state, step.started = text, "running", time.monotonic()
+        self.started_count += 1
+        self.actions.clear()
+
+    def finish(self, detail: str, is_ok: bool) -> _Step | None:
+        step = self.running
+        if step is not None:
+            step.state, step.detail = ("done" if is_ok else "failed"), detail
+        self.actions.clear()
+        return step
+
+
+# --- terminal output -----------------------------------------------------------------------
+
+
+class PlainProgress:
+    """For pipes and CI: a line per test and per finished step, then the result. ASCII marks."""
+
+    def __init__(self) -> None:
+        self._checklist = _Checklist()
+
+    def test_started(self, heading: TestHeading, eta: "Eta") -> None:
+        self._checklist = _Checklist.planned(heading.steps)
+        model = heading.model or "default model"
+        print(f"[{heading.index}/{heading.total}] {heading.title}  ({model})", flush=True)
+
+    def step_started(self, text: str) -> None:
+        self._checklist.start(text)
+
+    def action(self, description: str) -> None:
+        pass
+
+    def step_finished(self, detail: str, is_ok: bool = True) -> None:
+        step = self._checklist.finish(detail, is_ok)
+        if step is not None:
+            line = f"  {_PLAIN_MARKS[step.state]} {_shorten(step.text, 70)}  {detail}"
+            print(line.rstrip(), flush=True)
+
+    def test_finished(self, record: dict[str, Any]) -> None:
+        for kind, text in result_lines(record):
+            print(f"{_PLAIN_MARKS.get(kind, '      ')} {text}", flush=True)
+        print(flush=True)
+
+    def pause(self) -> None:
+        pass
+
+    def resume(self) -> None:
+        pass
+
+
+class LiveProgress:
+    """The running test's checklist, redrawn in place; replaced by its result when it ends."""
+
+    def __init__(self) -> None:
+        self._console = Console(highlight=False)
+        self._live: Live | None = None
+        self._heading = TestHeading(0, 0, "", None, [])
+        self._checklist = _Checklist()
+        self._eta = Eta({}, [])
+        self._started = 0.0
+
+    def test_started(self, heading: TestHeading, eta: "Eta") -> None:
+        self._heading, self._eta = heading, eta
+        self._checklist = _Checklist.planned(heading.steps)
+        self._started = time.monotonic()
+        self._live = Live(
+            get_renderable=self._render,
+            console=self._console,
+            refresh_per_second=_REFRESHES_PER_SECOND,
+            transient=True,
+        )
+        self._live.start()
+
+    def step_started(self, text: str) -> None:
+        self._checklist.start(text)
+
+    def action(self, description: str) -> None:
+        self._checklist.actions.append(description)
+
+    def step_finished(self, detail: str, is_ok: bool = True) -> None:
+        self._checklist.finish(detail, is_ok)
+
+    def test_finished(self, record: dict[str, Any]) -> None:
+        self.pause()
+        self._live = None
+        for kind, text in result_lines(record):
+            mark = _STEP_MARKS.get(kind, " ")
+            self._console.print(Text(f"{mark} {text}", style=_STEP_STYLES.get(kind, "dim")))
+        self._console.print()
+
+    def pause(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+
+    def resume(self) -> None:
+        if self._live is not None:
+            self._live.start()
+
+    def _render(self) -> Group:
+        elapsed = time.monotonic() - self._started
+        return Group(
+            self._header(elapsed), Text(), self._steps_table(), Text(), self._footer(elapsed)
+        )
+
+    def _header(self, elapsed: float) -> Table:
+        heading = self._heading
+        model = heading.model or "default model"
+        title = f"{heading.title}  ·  {model}  ·  test {heading.index} of {heading.total}"
+        header = Table.grid(expand=True)
+        header.add_column(ratio=1)
+        header.add_column(justify="right")
+        header.add_row(Text(title, style="bold"), Text(format_seconds(elapsed), style="dim"))
+        return header
+
+    def _steps_table(self) -> Table:
+        table = Table.grid(expand=True, padding=(0, 1))
+        table.add_column(width=3)
+        table.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+        table.add_column(justify="right", no_wrap=True)
+        running = self._checklist.running
+        for step in self._checklist.steps:
+            is_running = step is running
+            detail = format_seconds(time.monotonic() - step.started) if is_running else step.detail
+            table.add_row(
+                Text(f" {_STEP_MARKS[step.state]}", style=_STEP_STYLES[step.state]),
+                Text(step.text, style="bold" if is_running else ""),
+                Text(detail, style="dim"),
+            )
+            if is_running:
+                for description in self._checklist.actions or ["thinking…"]:
+                    table.add_row("", Text(f"    {description}", style="dim"), "")
+        return table
+
+    def _footer(self, elapsed: float) -> Text:
+        remaining = self._eta.remaining_s(elapsed)
+        estimate = (
+            "first run of this test, no time estimate yet"
+            if remaining is None
+            else f"about {format_seconds(remaining)} left"
+        )
+        position = max(self._checklist.started_count, 1)
+        steps = len(self._checklist.steps)
+        return Text(f"  step {position} of {steps}  ·  {estimate}", style="dim")
+
+
+# --- estimating time left ------------------------------------------------------------------
 
 
 def load_history(runs_root: Path) -> dict[str, float]:
@@ -67,8 +379,8 @@ def load_history(runs_root: Path) -> dict[str, float]:
 
 class Eta:
     """Estimates how long the rest of the invocation takes. Each run's estimate is its test's
-    last recorded duration, else the mean of runs finished so far; if any run
-    still has no estimate, there is no ETA rather than a made-up one."""
+    last recorded duration, else the mean of runs finished so far; if any run still has no
+    estimate, there is no ETA rather than a made-up one."""
 
     def __init__(self, history: dict[str, float], run_keys: list[str]) -> None:
         self._history = history
@@ -91,17 +403,10 @@ class Eta:
 
     def remaining_s(self, elapsed_s: float) -> float | None:
         estimates = [self.estimate(key) for key in self._run_keys[self._current :]]
-        if any(estimate is None for estimate in estimates):
+        if not estimates or any(estimate is None for estimate in estimates):
             return None
         current, *later = estimates
         return max(current - elapsed_s, 0.0) + sum(later)
-
-    def fraction_done(self, elapsed_s: float) -> float:
-        if not self._run_keys:
-            return 1.0
-        estimate = self.estimate(self._run_keys[self._current])
-        current_fraction = min(elapsed_s / estimate, _MAX_RUN_FRACTION) if estimate else 0.0
-        return (self._current + current_fraction) / len(self._run_keys)
 
 
 def format_seconds(seconds: float) -> str:
@@ -115,105 +420,26 @@ def format_seconds(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
-def describe_run(heading: RunHeading) -> str:
-    repeat = (
-        f" (repeat {heading.repeat_index}/{heading.repeat_count})"
-        if heading.repeat_count > 1
-        else ""
-    )
-    model = heading.model or "default model"
-    return f"[{heading.index}/{heading.total}] {heading.test_name}{repeat}  {model}"
+class SilentProgress:
+    """Shows nothing: for runs nobody is watching."""
 
-
-class PlainProgress:
-    """For pipes and CI: one line when a run starts and one when it ends, no escape codes."""
-
-    def run_started(self, heading: RunHeading, eta: Eta) -> None:
-        print(describe_run(heading), flush=True)
-
-    def activity(self, turn: int, last_tool: str | None) -> None:
+    def test_started(self, heading: TestHeading, eta: Eta) -> None:
         pass
 
-    def run_finished(self, line: str) -> None:
-        print(line, flush=True)
+    def step_started(self, text: str) -> None:
+        pass
+
+    def action(self, description: str) -> None:
+        pass
+
+    def step_finished(self, detail: str, is_ok: bool = True) -> None:
+        pass
+
+    def test_finished(self, record: dict[str, Any]) -> None:
+        pass
 
     def pause(self) -> None:
         pass
 
     def resume(self) -> None:
         pass
-
-
-class LiveProgress:
-    """A status block redrawn in place while a run goes, replaced by its result line after."""
-
-    def __init__(self) -> None:
-        self._console = Console(highlight=False)
-        self._live: Live | None = None
-        self._heading = RunHeading(0, 0, "", None, None)
-        self._eta = Eta({}, [])
-        self._started = 0.0
-        self._turn = 1
-        self._last_tool: str | None = None
-
-    def run_started(self, heading: RunHeading, eta: Eta) -> None:
-        self._heading, self._eta = heading, eta
-        self._started = time.monotonic()
-        self._turn, self._last_tool = 1, None
-        self._live = Live(
-            get_renderable=self._render,
-            console=self._console,
-            refresh_per_second=_REFRESHES_PER_SECOND,
-            transient=True,
-        )
-        self._live.start()
-
-    def activity(self, turn: int, last_tool: str | None) -> None:
-        if turn != self._turn:
-            self._turn, self._last_tool = turn, None
-        self._last_tool = last_tool or self._last_tool
-
-    def run_finished(self, line: str) -> None:
-        self.pause()
-        self._live = None
-        self._console.print(line, markup=False)
-
-    def pause(self) -> None:
-        if self._live is not None:
-            self._live.stop()
-
-    def resume(self) -> None:
-        if self._live is not None:
-            self._live.start()
-
-    def _render(self) -> Group:
-        elapsed = time.monotonic() - self._started
-        return Group(
-            Text(describe_run(self._heading), style="bold"),
-            Text(self._activity_line(elapsed), style="dim"),
-            self._bar(elapsed),
-        )
-
-    def _activity_line(self, elapsed: float) -> str:
-        planned = self._heading.planned_turns
-        turns = f"{self._turn}/{planned}" if planned else str(self._turn)
-        doing = self._last_tool or "thinking"
-        return f"  turn {turns} · {doing} · {format_seconds(elapsed)} elapsed"
-
-    def _bar(self, elapsed: float) -> Table:
-        fraction = self._eta.fraction_done(elapsed)
-        remaining = self._eta.remaining_s(elapsed)
-        estimate = "" if remaining is None else f"est. {format_seconds(remaining)} left"
-        bar = Table.grid(padding=(0, 1))
-        bar.add_row(
-            Text(" "),
-            ProgressBar(total=1.0, completed=fraction, width=_BAR_WIDTH),
-            Text(f"{fraction:>4.0%}"),
-            Text(estimate),
-        )
-        return bar
-
-
-def make_progress() -> Progress:
-    """Live in a terminal, plain lines otherwise."""
-    return LiveProgress() if sys.stdout.isatty() else PlainProgress()

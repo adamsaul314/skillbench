@@ -13,8 +13,15 @@ from typing import Any
 from skillbench.claude import ClaudeNotFoundError, find_claude
 from skillbench.config import TEST_FOLDERS, ConfigError, Project, TestSpec, find_project, load_test
 from skillbench.dashboard import INDEX_FILE_NAME, format_duration, format_optional, write_dashboard
-from skillbench.progress import Eta, Progress, RunHeading, load_history, make_progress
-from skillbench.runner import AskUser, RunOptions, is_sent_to_claude, run_test
+from skillbench.progress import (
+    Eta,
+    Progress,
+    TestHeading,
+    format_check,
+    load_history,
+    make_progress,
+)
+from skillbench.runner import AskUser, RunOptions, run_test
 from skillbench.scaffold import scaffold
 
 _EXIT_OK = 0
@@ -34,6 +41,7 @@ class _UsageError(Exception):
 
 
 def main(argv: list[str] | None = None) -> int:
+    _use_utf8_output()
     args = _parser().parse_args(argv)
     if args.command == "init":
         return _init_command()
@@ -67,6 +75,18 @@ def _run_command(
     variants = [variant for spec in specs for variant in _variants(spec, args.repeat)]
     print(f"skillbench: {_describe_plan(variants)}")
     return _run_all(_repeats_of(variants), options, project.runs_dir, progress)
+
+
+def _use_utf8_output() -> None:
+    """Piped output is UTF-8 on every OS (Windows would otherwise use its legacy code page, which
+    can't show ✓ or most non-English text), and nothing unprintable ever crashes a run."""
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):
+            continue
+        if stream.isatty():
+            stream.reconfigure(errors="replace")
+        else:
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -278,8 +298,7 @@ class _TestResult:
         hits: Counter[str] = Counter()
         for record in self.records:
             for result in record["assertions"]:
-                label = f"{result['type']}: {_format_expected(result['expected'])}"
-                hits[label] += 1 if result["passed"] else 0
+                hits[format_check(result)] += 1 if result["passed"] else 0
         return list(hits.items())
 
 
@@ -290,11 +309,11 @@ def _run_all(
     results: dict[str, _TestResult] = {}
     for index, run in enumerate(runs):
         eta.start_run(index)
-        progress.run_started(_heading(run, options, index, len(runs)), eta)
+        progress.test_started(_heading(run, options, index, len(runs)), eta)
         record = run_test(run.spec, runs_root, options, repeat_index=run.repeat_index)
         eta.finish_run(record["duration_s"])
         write_dashboard(runs_root)
-        progress.run_finished(_run_line(record))
+        progress.test_finished(record)
         result = results.setdefault(
             run.spec.name, _TestResult(run.spec.name, run.spec.min_pass_rate)
         )
@@ -305,21 +324,27 @@ def _run_all(
     return _EXIT_OK if is_all_passed else _EXIT_RUN_FAILED
 
 
-def _heading(run: _PlannedRun, options: RunOptions, index: int, total: int) -> RunHeading:
+def _heading(run: _PlannedRun, options: RunOptions, index: int, total: int) -> TestHeading:
     spec = run.spec
-    planned_turns = None
-    if not spec.is_interactive:
-        messages = [answer for answer in spec.answers if is_sent_to_claude(answer)]
-        planned_turns = 1 if spec.trigger is not None else 1 + len(messages)
-    return RunHeading(
+    return TestHeading(
         index=index + 1,
         total=total,
         test_name=spec.name,
         model=options.model_for(spec),
-        planned_turns=planned_turns,
+        steps=[_first_message(spec), *([] if spec.trigger is not None else spec.answers)],
         repeat_index=run.repeat_index,
         repeat_count=spec.repeat,
     )
+
+
+def _first_message(spec: TestSpec) -> str:
+    """The prompt as planned; a skill test's exact /command is only known once the skill is
+    found in the workspace, and replaces this when the step starts."""
+    if spec.trigger is not None:
+        return spec.trigger.prompt
+    if spec.skill is not None:
+        return f"/{spec.skill} {spec.skill_input}".strip()
+    return spec.prompt
 
 
 def _terminal_asker(progress: Progress) -> AskUser:
@@ -336,13 +361,6 @@ def _terminal_asker(progress: Progress) -> AskUser:
             progress.resume()
 
     return ask
-
-
-def _run_line(record: dict[str, Any]) -> str:
-    repeat = record["repeat_count"]
-    repeat_text = f" (repeat {record['repeat_index']}/{repeat})" if repeat > 1 else ""
-    line = f"{record['test_name']}{repeat_text}: {record['status']} in {record['duration_s']}s"
-    return f"{line}\n  {record['error']}" if record["error"] else line
 
 
 def _summary(results: list[_TestResult]) -> str:
@@ -378,14 +396,6 @@ def _repeat_lines(result: _TestResult) -> list[str]:
         f"needs {result.min_pass_rate:.0%} -> {result.status}"
     )
     return [header, *(f"  {label}  {hits}/{runs}" for label, hits in result.assertion_hits())]
-
-
-def _format_expected(expected: Any) -> str:
-    if isinstance(expected, list):
-        return " -> ".join(map(str, expected))
-    if isinstance(expected, dict):
-        return ", ".join(f"{key}={value}" for key, value in expected.items())
-    return str(expected)
 
 
 def _shown_path(path: Path) -> str:
