@@ -14,7 +14,7 @@ from skillbench.claude import ClaudeNotFoundError, find_claude
 from skillbench.config import TEST_FOLDERS, ConfigError, Project, TestSpec, find_project, load_test
 from skillbench.dashboard import INDEX_FILE_NAME, format_duration, format_optional, write_dashboard
 from skillbench.progress import Eta, Progress, RunHeading, load_history, make_progress
-from skillbench.runner import AskUser, RunOptions, run_test
+from skillbench.runner import AskUser, RunOptions, is_sent_to_claude, run_test
 from skillbench.scaffold import scaffold
 
 _EXIT_OK = 0
@@ -309,7 +309,8 @@ def _heading(run: _PlannedRun, options: RunOptions, index: int, total: int) -> R
     spec = run.spec
     planned_turns = None
     if not spec.is_interactive:
-        planned_turns = 1 if spec.trigger is not None else 1 + len(spec.answers)
+        messages = [answer for answer in spec.answers if is_sent_to_claude(answer)]
+        planned_turns = 1 if spec.trigger is not None else 1 + len(messages)
     return RunHeading(
         index=index + 1,
         total=total,

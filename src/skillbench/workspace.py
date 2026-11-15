@@ -14,6 +14,8 @@ _GIT_URL = re.compile(r"^(https?|ssh|git|file)://|^[\w.-]+@[\w.-]+:|\.git/?$")
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 # Windows' 260-character path limit trips over deep repos without this; harmless elsewhere.
 _GIT_CONFIG = ["-c", "core.longpaths=true"]
+# A push URL that can never work, so a test can't push back to the repo it was cloned from.
+_NO_PUSH_URL = "push-disabled-by-skillbench"
 
 
 class FixtureError(Exception):
@@ -50,12 +52,23 @@ def create_workspace(fixture: Fixture | None, exclude: Path) -> tuple[Path, str 
 
 
 def _clone(fixture: GitFixture, workspace: Path) -> str:
-    """Clone into the workspace, check out the ref if any, and return the commit."""
+    """Clone into the workspace, check out the ref if any, make it impossible to push back,
+    and return the commit."""
     _git(["clone", "--quiet", fixture.url, "."], workspace, f"cloning {fixture.url}")
     if fixture.ref is not None:
         doing = f"checking out ref '{fixture.ref}' of {fixture.url}"
         _git(["checkout", "--quiet", fixture.ref], workspace, doing)
+    _disable_push(workspace)
     return _git(["rev-parse", "HEAD"], workspace, f"reading the commit of {fixture.url}").strip()
+
+
+def _disable_push(workspace: Path) -> None:
+    """Point every remote's push URL at nothing, so nothing done in a test (by the agent or a
+    `!command`) can reach the real repo. Fetching still works."""
+    remotes = _git(["remote"], workspace, "listing the clone's remotes").split()
+    for remote in remotes:
+        doing = f"disabling push to '{remote}'"
+        _git(["remote", "set-url", "--push", remote, _NO_PUSH_URL], workspace, doing)
 
 
 def copy_folder(source: Path, destination: Path, exclude: Path) -> None:

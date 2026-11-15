@@ -128,6 +128,12 @@ _CLEAR = "/clear"
 _COMMAND_PREFIX = "!"
 
 
+def is_sent_to_claude(answer: str) -> bool:
+    """False for the answers skillbench carries out itself: `/clear` and `!command`."""
+    answer = answer.strip()
+    return answer != _CLEAR and not answer.startswith(_COMMAND_PREFIX)
+
+
 class _StopReason(StrEnum):
     """Why a conversation ended; recorded in run.json as `stop_reason`."""
 
