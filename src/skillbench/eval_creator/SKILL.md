@@ -14,9 +14,25 @@ The user describes what they want to test (in the arguments or the conversation)
 2. **Read what is being tested.** Find the skills involved and read each `SKILL.md`: its `name`, its `description`, and whether its frontmatter has `disable-model-invocation: true` (then it can only be started by its `/command`, so Claude will never pick it by itself). Skills live in `.claude/skills/<name>/`, `skills/<name>/`, `.github/skills/<name>/`, or a plugin's `skills/<name>/`. A plugin is a folder with `.claude-plugin/plugin.json`; its skills are called `/<plugin>:<skill>`, and its subagents are in `agents/`.
 3. **Load the plugin, if this repo is one.** If the repo root has `.claude-plugin/plugin.json` and any test you write uses a `fixture:` other than `.`, then `skillbench/skillbench.yaml` must contain `plugin: .`. Add it if it's missing. Without it, the agent in the other repo has none of this plugin's skills or subagents, and every `/<plugin>:...` command fails.
 4. **Ask only what you can't find out.** Usually at most: which repo the agent should work on, and what a good result looks like. Don't ask about things you can read from the files.
-5. **Write the test files**, following the format below. One test per file, named after what it checks (`grilling-asks-first.yaml`). Skill tests go in `skillbench/skills/`, agent tests in `skillbench/agent/`.
-6. **Validate.** Run `skillbench check`. It costs nothing. Fix every error and warning it reports and run it again until it is clean.
-7. **Hand over.** List the files you wrote and what each checks, then give the exact command to run them, with the cheapest model for a first try, e.g. `skillbench skill grilling --model claude-haiku-5-5`. For a workflow whose answers you had to guess, suggest a first run with `interactive: true`.
+5. **Propose the tests. Write nothing yet.** Show the user the proposal in the format below and stop. Ask the questions in it, if any.
+6. **Wait for approval.** Only the user's explicit approval ("approve", "go", "yes") lets you write files. If they ask for changes, change the proposal and show it again. Don't write files to test an idea.
+7. **Write the test files**, following the format below, exactly as approved. One test per file, named after what it checks (`grilling-asks-first.yaml`). Skill tests go in `skillbench/skills/`, agent tests in `skillbench/agent/`. If a file already exists, show the user what will change before you overwrite it.
+8. **Validate.** Run `skillbench check`. It costs nothing. Fix every error and warning it reports and run it again until it is clean.
+9. **Hand over.** List the files you wrote and what each checks, then give the exact command to run them, with the cheapest model for a first try, e.g. `skillbench skill grilling --model claude-haiku-5-5`. For a workflow whose answers you had to guess, suggest a first run with `interactive: true`.
+
+## The proposal (step 5)
+
+Keep it to one screen, in plain words. For each test:
+
+- **Name and purpose:** the test's file name, and one plain sentence on what it checks.
+- **What it runs:** the skill and input, or the prompt, and the fixture (which repo).
+- **What it checks:** each check as a plain sentence ("Claude uses the grilling skill", "Claude doesn't write any files"), not as YAML.
+- **Passes when:** for a repeated or trigger test, the pass rate. For a test whose verdict depends on wording, say which word or verdict counts.
+- **Cost:** a rough estimate, using these bands: *cheap* (a single skill test, a few cents on Haiku), *moderate* (an agent test with a few replies), *expensive* (a full multi-step workflow, several dollars). Say it's an estimate.
+
+End with the questions that matter, two or three at most, and the line: "Reply **approve**, or tell me what to change. Nothing is written until you approve."
+
+Don't show YAML in the proposal. Show it only after approval, when writing the files.
 
 ## Choosing the kind of test
 
