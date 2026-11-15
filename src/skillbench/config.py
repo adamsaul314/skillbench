@@ -56,6 +56,7 @@ class TestSpec:
     name: str
     prompt: str
     kind: str  # "skill" or "agent": which tests folder the file is in
+    description: str | None = None  # what the test checks, in the user's words
     fixture: Fixture | None = None
     model: str | None = None  # from skillbench.yaml; --model overrides it
     timeout_s: float = _DEFAULT_TIMEOUT_S
@@ -118,6 +119,7 @@ def load_test(test_path: Path, project: Project, kind: str) -> TestSpec:
     return TestSpec(
         source_path=test_path,
         name=raw.get("name", test_path.stem),
+        description=raw.get("description"),
         prompt=raw.get("prompt", ""),
         kind=kind,
         fixture=_resolve_fixture(test_path, merged.get("fixture"), project.repo_root),
@@ -285,6 +287,7 @@ _DEFAULT_RULES: dict[str, _Rule] = {
 }
 _TEST_RULES: dict[str, _Rule] = {
     "name": (_is_string, "a string"),
+    "description": (_is_non_empty_string, "a sentence saying what the test checks"),
     "skill": (_is_non_empty_string, "a skill name or a path to it"),
     "input": (_is_string, "a string"),
     "triggers": (_is_triggers, "a mapping with 'should' and/or 'should_not' lists of prompts"),

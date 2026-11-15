@@ -13,6 +13,17 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from skillbench.claude import final_text
+from skillbench.progress import (
+    format_seconds,
+    plural,
+    run_error,
+    shorten,
+    steps_taken,
+    why_not_passed,
+)
+from skillbench.workspace import is_git_url
+
 INDEX_FILE_NAME = "index.html"
 _RUN_RECORD_FILE_NAME = "run.json"
 _EMPTY_STATE = (
@@ -20,7 +31,10 @@ _EMPTY_STATE = (
     "<p>Run <code>skillbench skill</code> or <code>skillbench agent</code>. Each run is added "
     "here with its full timeline.</p></section>"
 )
-_COLUMNS = ("date", "test", "backend", "model", "status", "duration", "turns", "cost / usage")
+_COLUMNS = ("what's tested", "status", "test", "when")
+_SHOWN_STEP_CHARS = 160
+_LISTED_SKILLS = 5  # a plugin's skills named in its description before "and N more"
+_ROW_DATE_FORMAT = "%d %b %H:%M"
 
 # Master-detail: the runs table, restyled as a pinned list, beside the selected run. A run is
 # selected by its link (CSS :target); with none selected the newest run shows.
@@ -34,31 +48,58 @@ _DASHBOARD_STYLE = """
 .runs table, .runs tbody { display: block; border-collapse: collapse; }
 .runs thead { position: absolute; width: 1px; height: 1px; overflow: hidden;
               clip-path: inset(50%); }
-.runs tr { position: relative; display: grid; grid-template-columns: auto auto 1fr auto;
-           grid-template-areas: "test test test status" "backend duration . ."
-                                "date date date date";
-           gap: 0 .75rem; padding: .7rem 1.25rem .7rem 1rem; border-left: 4px solid transparent;
-           border-bottom: 1px solid var(--rule); }
+.runs tr { position: relative; display: grid; grid-template-columns: 1fr auto;
+           grid-template-areas: "subject status" "test test" "when when";
+           gap: .1rem .75rem; padding: .75rem 1.25rem .75rem 1rem;
+           border-left: 4px solid transparent; border-bottom: 1px solid var(--rule); }
 .runs tr:hover { background: var(--code); }
 .runs tr:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
-.runs td { padding: 0; font-size: .8rem; color: var(--muted); }
-.runs td:nth-child(1) { grid-area: date; font-variant-numeric: tabular-nums; }
-.runs td:nth-child(2) { grid-area: test; font-size: .95rem; font-weight: 600; color: var(--ink);
-                        overflow-wrap: anywhere; }
-.runs td:nth-child(2) a { text-decoration: none; outline: none; }
-.runs td:nth-child(2) a::after { content: ""; position: absolute; inset: 0; }
-.runs td:nth-child(3) { grid-area: backend; }
-.runs td:nth-child(5) { grid-area: status; font-family: var(--display); font-weight: 600;
-                        font-size: .9rem; }
-.runs td:nth-child(6) { grid-area: duration; font-variant-numeric: tabular-nums; }
-.runs td:nth-child(4), .runs td:nth-child(7), .runs td:nth-child(8) { display: none; }
+.runs td { padding: 0; min-width: 0; }
+.runs .row-subject { grid-area: subject; font: 600 1rem/1.25 var(--display); color: var(--ink);
+                     overflow-wrap: anywhere; }
+.runs .row-subject a { text-decoration: none; outline: none; }
+.runs .row-subject a::after { content: ""; position: absolute; inset: 0; }
+.runs .row-repeat { font-weight: 400; color: var(--muted); }
+.runs .row-status { grid-area: status; font: 600 .85rem var(--display); }
+.runs .row-test { grid-area: test; font-size: .82rem; color: var(--ink); overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+.runs .row-test .kind { color: var(--muted); margin-left: .35rem; }
+.runs .row-when { grid-area: when; font-size: .75rem; color: var(--muted);
+                  font-variant-numeric: tabular-nums; }
+.runs .row-when span + span { margin-left: .6rem; }
 .runs .empty { padding: 1.25rem; color: var(--muted); font-size: .9rem; }
-.details { padding: 2.5rem clamp(1rem, 4vw, 3.5rem) 4rem; min-width: 0; max-width: 72rem; }
+.details { padding: 2.5rem clamp(1rem, 4vw, 3.5rem) 4rem; min-width: 0; max-width: 72rem;
+            overflow-wrap: anywhere; }
 .run-detail { display: none; scroll-margin-top: 1rem; }
 .run-detail:target,
 body:not(:has(.run-detail:target)) .run-detail:first-child { display: block; }
 body:not(:has(.run-detail:target)) .runs tbody tr:first-child { border-left-color: var(--ink);
                                                                   background: var(--bench); }
+.subject h2 { font-size: clamp(2rem, 4.5vw, 3.1rem); font-stretch: condensed;
+              letter-spacing: -.015em; line-height: 1.05; }
+.stamp { display: inline-block; margin-left: .45rem; padding: .05rem .5rem; position: relative;
+         top: -.35em; border: 2px solid currentColor; border-radius: 3px; color: var(--muted);
+         font: 600 .95rem var(--display); letter-spacing: 0; font-stretch: normal; }
+.subject-what { margin: .45rem 0 0; color: var(--muted); max-width: 70ch; }
+.test-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem;
+             margin: 1.6rem 0 0; padding-top: 1.1rem; border-top: 1px solid var(--rule); }
+.test-name { font: 600 1.25rem var(--display); overflow-wrap: anywhere; }
+.description { margin: .45rem 0 0; max-width: 70ch; }
+.setup { margin: .3rem 0 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.steps { list-style: none; counter-reset: step; margin: 1.1rem 0 0; padding: 0; max-width: 76ch; }
+.steps li { counter-increment: step; display: grid; gap: .65rem; align-items: center;
+            grid-template-columns: 1.5rem minmax(0, 1fr) auto; padding: .18rem 0; }
+.steps li::before { content: counter(step); display: grid; place-items: center;
+                    width: 1.35rem; height: 1.35rem; border-radius: 50%;
+                    background: var(--ink); color: var(--bench);
+                    font: 600 .78rem var(--display); }
+.steps .step-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps .command { font-family: var(--mono); font-size: .82rem; }
+.steps .note { font-size: .78rem; color: var(--muted); }
+.steps .stopped::before { background: var(--fail); }
+.steps .stopped .note { color: var(--fail); }
+.steps .not-run { color: var(--muted); }
+.steps .not-run::before { background: var(--rule); color: var(--muted); }
 .empty-state { max-width: 34rem; }
 .empty-state h2 { margin-bottom: .5rem; }
 @media (max-width: 760px) {
@@ -148,7 +189,9 @@ pre { margin: 0; padding: .5rem .65rem; background: var(--code); border-radius: 
 .assertions .pass .verdict::before { content: "\\2713"; }
 .assertions .fail .verdict { color: var(--fail); }
 .assertions .fail .verdict::before { content: "\\2717"; }
-.assertions .reason { color: var(--muted); font-size: .88rem; }
+.assertions li > * { min-width: 0; }
+.assertions code { overflow-wrap: anywhere; }
+.assertions .reason { color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
 .assertions .fail .reason { color: var(--ink); }
 .tally { font-family: var(--body); font-weight: 400; font-size: .85rem; color: var(--muted);
          margin-left: .5rem; }
@@ -236,33 +279,51 @@ def _view_run(run_dir: Path) -> _RunView | None:
 
 def _render_run(run_id: str, record: dict[str, Any]) -> _RunView:
     """Raises KeyError, TypeError or ValueError if the record is malformed."""
-    cells = (
-        format_start_time(record["start_time"]),
-        _detail_link(run_id, _run_label(record)),
-        escape(record["backend"]),
-        escape(format_optional(record["model"])),
-        _status_cell(record["status"]),
-        format_duration(record["duration_s"]),
-        escape(format_optional(record["trace"]["num_turns"])),
-        escape(format_cost_and_usage(record["trace"])),
+    status = record["status"]
+    when = (
+        f"<span>{escape(format_seconds(record['duration_s']))}</span>"
+        f"<span>{escape(_row_date(record['start_time']))}</span>"
+    )
+    row = (
+        "<tr>"
+        f'<td class="row-subject">{_detail_link(run_id, _subject_title(record))}'
+        f"{_repeat_note(record)}</td>"
+        f'<td class="row-status">{_status_cell(status)}</td>'
+        f'<td class="row-test">{_row_test(record)}</td>'
+        f'<td class="row-when">{when}</td>'
+        "</tr>"
     )
     eval_id = record.get("eval_id")
     return _RunView(
         run_id=run_id,
-        status=record["status"],
+        status=status,
         sort_time=datetime.fromisoformat(record["start_time"]).astimezone(),
         group=f"{eval_id}/{record['test_name']}" if eval_id else run_id,
-        row_html=_row(cells),
-        detail_html=_detail_section(run_id, record["test_name"], _render_run_detail(record)),
+        row_html=row,
+        detail_html=_render_detail(run_id, record),
     )
 
 
-def _run_label(record: dict[str, Any]) -> str:
-    """The test name, plus which repeat this was when the test ran more than once."""
+def _repeat_note(record: dict[str, Any]) -> str:
     repeat_count = record.get("repeat_count") or 1
-    if repeat_count > 1:
-        return f"{record['test_name']} #{record.get('repeat_index', 1)}/{repeat_count}"
-    return record["test_name"]
+    if repeat_count == 1:
+        return ""
+    return f' <span class="row-repeat">#{record.get("repeat_index", 1)}/{repeat_count}</span>'
+
+
+def _row_test(record: dict[str, Any]) -> str:
+    """Which test: a trigger test by its prompt, any other by its name and kind."""
+    trigger = record.get("trigger")
+    if trigger:
+        verdict = "should pick it" if trigger["should_invoke"] else "shouldn't pick it"
+        return f'{escape(verdict)}: <span class="kind">"{escape(trigger["prompt"])}"</span>'
+    name = escape(record["test_name"])
+    kind = record.get("kind")
+    return f'{name}<span class="kind">{escape(kind)} test</span>' if kind else name
+
+
+def _row_date(start_time: str) -> str:
+    return datetime.fromisoformat(start_time).astimezone().strftime(_ROW_DATE_FORMAT)
 
 
 def _detail_id(run_id: str) -> str:
@@ -277,16 +338,143 @@ def _status_cell(status: str) -> str:
     return f'<span class="status-{escape(status)}">{escape(status)}</span>'
 
 
-def _row(cells: tuple[str, ...]) -> str:
-    return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
-
-
-def _detail_section(run_id: str, title: str, body_html: str) -> str:
-    run_id_html = "" if title == run_id else f" <small>{escape(run_id)}</small>"
+def _render_detail(run_id: str, record: dict[str, Any]) -> str:
+    """A run's page: what it tests and how, first; then its results."""
     return (
         f'<section class="run-detail" id="{escape(_detail_id(run_id))}">'
-        f"<h2>{escape(title)}{run_id_html}</h2>{body_html}</section>"
+        f"{_render_subject(record)}{_render_test(record)}{_render_run_detail(record)}</section>"
     )
+
+
+# --- what a run tests ---------------------------------------------------------------------
+
+
+def _subject_title(record: dict[str, Any]) -> str:
+    """What's under test, short: `grilling skill`, `overpowered 0.2.0`, `This repo's setup`."""
+    name, stamp, _ = _subject(record)
+    return f"{name} {stamp}" if stamp else name
+
+
+def _render_subject(record: dict[str, Any]) -> str:
+    """The thing being tested, as the page's headline, with a sentence saying what it is."""
+    name, stamp, sentence = _subject(record)
+    stamp_html = f'<span class="stamp">{escape(stamp)}</span>' if stamp else ""
+    sentence_html = f'<p class="subject-what">{escape(sentence)}</p>' if sentence else ""
+    return f'<header class="subject"><h2>{escape(name)}{stamp_html}</h2>{sentence_html}</header>'
+
+
+def _subject(record: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    """The subject's name, its stamp (`skill`, or a plugin's version) and a sentence about it.
+    Runs recorded before subjects existed show only their test name."""
+    subject = record.get("subject")
+    if not subject:
+        return record["test_name"], None, None
+    if subject.get("skill"):
+        return subject["skill"], "skill", _skill_sentence(subject, bool(record.get("trigger")))
+    if subject["kind"] == "plugins" and len(subject["plugins"]) == 1:
+        plugin = subject["plugins"][0]
+        return plugin["name"], plugin.get("version"), _plugin_sentence(plugin)
+    if subject["kind"] == "plugins":
+        titles = ", ".join(_plugin_title(plugin) for plugin in subject["plugins"])
+        return titles, None, "Plugins under test, loaded together."
+    return "This repo's setup", None, _repo_sentence(subject)
+
+
+def _plugin_title(plugin: dict[str, Any]) -> str:
+    return f"{plugin['name']} {plugin['version']}" if plugin.get("version") else plugin["name"]
+
+
+def _skill_sentence(subject: dict[str, Any], is_trigger: bool) -> str:
+    what = "Tests whether Claude picks this skill on its own" if is_trigger else "Skill under test"
+    plugin = subject.get("plugin")
+    return f"{what}, from the {_plugin_title(plugin)} plugin." if plugin else f"{what}."
+
+
+def _plugin_sentence(plugin: dict[str, Any]) -> str:
+    """e.g. `Plugin under test, with 5 skills (understand, build, …) and the reviewer agent.`"""
+    skills = plugin.get("skills") or []
+    agents = plugin.get("agents") or []
+    parts = []
+    if skills:
+        listed = ", ".join(skills[:_LISTED_SKILLS])
+        more = f" and {len(skills) - _LISTED_SKILLS} more" if len(skills) > _LISTED_SKILLS else ""
+        parts.append(f"{plural(len(skills), 'skill')} ({listed}{more})")
+    if agents:
+        parts.append(
+            f"the {agents[0]} agent" if len(agents) == 1 else f"agents {', '.join(agents)}"
+        )
+    return f"Plugin under test, with {' and '.join(parts)}." if parts else "Plugin under test."
+
+
+def _repo_sentence(subject: dict[str, Any]) -> str:
+    skills, agents = subject.get("skills") or [], subject.get("agents") or []
+    if not skills and not agents:
+        return "No skills or agents were found in the repo, so Claude worked with its defaults."
+    found = [plural(len(skills), "skill"), plural(len(agents), "agent")]
+    return f"Everything the repo itself has: {' and '.join(found)}."
+
+
+def _render_test(record: dict[str, Any]) -> str:
+    """The test: its name and status, its description, where it ran, and its steps."""
+    status = record["status"]
+    description = record.get("description")
+    html = (
+        '<div class="test-line">'
+        f'<span class="test-name">{escape(record["test_name"])}{_repeat_note(record)}</span>'
+        f'<span class="status status-{escape(status)}">{escape(status)}</span></div>'
+    )
+    if description:
+        html += f'<p class="description">{escape(description)}</p>'
+    if record.get("kind"):
+        html += f'<p class="setup">{escape(_setup_sentence(record))}</p>'
+    return html + _render_steps(record)
+
+
+def _setup_sentence(record: dict[str, Any]) -> str:
+    """e.g. `Agent test on github.com/you/app at cd5def0`."""
+    kind = "Trigger" if record.get("trigger") else str(record["kind"]).capitalize()
+    fixture = record.get("fixture")
+    if fixture is None:
+        where = "in an empty repo"
+    elif is_git_url(fixture):
+        where = f"on {_repo_address(fixture)}"
+    else:
+        where = f"on a copy of {Path(fixture).name}"
+    commit = record.get("fixture_commit")
+    return f"{kind} test {where}" + (f" at {commit[:7]}" if commit else "")
+
+
+def _repo_address(fixture: str) -> str:
+    """`https://github.com/you/app.git@v1` -> `github.com/you/app` (the commit is shown apart)."""
+    address = fixture.split("://", 1)[-1]
+    host_and_path, _, ref = address.rpartition("@")
+    if ref and "/" in host_and_path:
+        address = host_and_path
+    return address.removesuffix(".git")
+
+
+def _render_steps(record: dict[str, Any]) -> str:
+    """The prompt and every answer, numbered. The step a failed run stopped at is marked, and
+    steps after it show as not run."""
+    if "planned_answers" not in record or not record.get("prompt"):
+        return ""
+    steps = [record["prompt"], *record["planned_answers"]]
+    taken = steps_taken(record)
+    stopped_at = taken if record["status"] == "error" and taken else None
+    items = []
+    for number, text in enumerate(steps, start=1):
+        state, note = "", ""
+        if number == stopped_at:
+            state, note = "stopped", "stopped here"
+        elif number > taken:
+            state, note = "not-run", "not run"
+        text_class = "step-text command" if text.startswith(("/", "!")) else "step-text"
+        shown = escape(shorten(text, _SHOWN_STEP_CHARS))
+        items.append(
+            f'<li class="{state}"><span class="{text_class}" title="{escape(text)}">'
+            f'{shown}</span><span class="note">{note}</span></li>'
+        )
+    return f'<ol class="steps" aria-label="Steps">{"".join(items)}</ol>'
 
 
 def _render_page(views: list[_RunView]) -> str:
@@ -345,17 +533,14 @@ def _css_string(value: str) -> str:
 
 
 def _render_run_detail(record: dict[str, Any]) -> str:
-    """Readout, assertion results and the full timeline of one run."""
+    """Why it didn't pass, the checks, the numbers, then the full timeline of one run."""
     return (
-        f"{_render_readout(record)}"
+        f"{_render_why_not_passed(record)}"
         f"{_render_assertions(record['assertions'])}"
+        f"{_render_readout(record)}"
         "<h3>Timeline</h3>"
         f"{_render_timeline(record['trace']['items'])}"
     )
-
-
-def format_duration(duration_s: float) -> str:
-    return f"{duration_s:.1f}s"
 
 
 def format_optional(value: Any) -> str:
@@ -381,36 +566,43 @@ def format_cost_and_usage(trace: dict[str, Any]) -> str:
 def _render_readout(record: dict[str, Any]) -> str:
     trace = record["trace"]
     readings = (
-        ("Backend", record["backend"]),
         ("Model", format_optional(record["model"])),
-        ("Duration", format_duration(record["duration_s"])),
+        ("Duration", format_seconds(record["duration_s"])),
         ("Turns", format_optional(trace["num_turns"])),
         ("Cost and usage", format_cost_and_usage(trace)),
         ("Started", format_start_time(record["start_time"])),
     )
-    status = record["status"]
     cells = "".join(
         f"<div><dt>{escape(label)}</dt><dd>{escape(value)}</dd></div>" for label, value in readings
     )
-    error = record.get("error")
-    error_html = f'<p class="run-error">{escape(str(error))}</p>' if error else ""
-    return (
-        f'<dl class="meter"><div><dt>Status</dt><dd><span class="status status-{escape(status)}">'
-        f"{escape(status)}</span></dd></div>{cells}</dl>{error_html}{_render_location(record)}"
-    )
+    return f'<dl class="meter">{cells}</dl>{_render_workspace(record)}'
 
 
-def _render_location(record: dict[str, Any]) -> str:
-    """Where the run happened: its workspace, and the fixture (and commit) it started from."""
-    html = ""
-    if record.get("workspace"):
-        html += f'<p class="workspace">Workspace <code>{escape(record["workspace"])}</code></p>'
-    if record.get("fixture"):
-        commit = record.get("fixture_commit")
-        at_commit = f" at <code>{escape(commit)}</code>" if commit else ""
-        fixture = escape(record["fixture"])
-        html += f'<p class="workspace">Fixture <code>{fixture}</code>{at_commit}</p>'
+def _render_why_not_passed(record: dict[str, Any]) -> str:
+    """For a run that didn't pass: where it stopped and the full error, or which checks failed;
+    then what Claude said last."""
+    if record["status"] == "pass":
+        return ""
+    if error := run_error(record):
+        steps = steps_taken(record)
+        headline = f"Stopped at step {steps}" if steps else "Couldn't start"
+        html = f'<p class="run-error"><strong>{escape(headline)}</strong><br>{escape(error)}</p>'
+    else:
+        html = f'<p class="run-error"><strong>{escape(why_not_passed(record) or "")}</strong></p>'
+    last_message = final_text(record["trace"]["items"])
+    if last_message:
+        html += (
+            "<h4>Claude's last message</h4>"
+            f'<div class="item"><div class="text">{escape(last_message)}</div></div>'
+        )
     return html
+
+
+def _render_workspace(record: dict[str, Any]) -> str:
+    """The temp folder the run worked in, kept so its files can be opened."""
+    if not record.get("workspace"):
+        return ""
+    return f'<p class="workspace">Workspace <code>{escape(record["workspace"])}</code></p>'
 
 
 def _render_assertions(results: list[dict[str, Any]]) -> str:

@@ -5,6 +5,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -41,6 +42,7 @@ class FoundSkill:
 
 @dataclass(frozen=True)
 class WorkspaceSkills:
+    workspace: Path
     plugin_dirs: list[Path]
     skills: list[FoundSkill]
 
@@ -69,7 +71,7 @@ def discover(workspace: Path, extra_plugin_dirs: list[Path]) -> WorkspaceSkills:
         for root in loose_roots
         for skill_dir in _skill_dirs(workspace / root)
     ]
-    return WorkspaceSkills(plugin_dirs=plugin_dirs, skills=skills)
+    return WorkspaceSkills(workspace=workspace, plugin_dirs=plugin_dirs, skills=skills)
 
 
 def resolve(workspace: Path, found: WorkspaceSkills, wanted: str) -> FoundSkill:
@@ -180,3 +182,49 @@ def _shown_path(path: Path, workspace: Path) -> str:
         return path.relative_to(workspace).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def describe_subject(found: WorkspaceSkills, target: FoundSkill | None) -> dict[str, Any]:
+    """What a run tests, for its record: the skill it targets (and that skill's plugin), else
+    every plugin loaded, else the repo's own skills and agents."""
+    plugins = {_plugin_name(plugin_dir): plugin_dir for plugin_dir in found.plugin_dirs}
+    if target is not None:
+        plugin_dir = plugins.get(target.plugin_name or "")
+        return {
+            "kind": "skill",
+            "skill": target.name,
+            "plugin": _plugin_summary(plugin_dir) if plugin_dir is not None else None,
+        }
+    if plugins:
+        return {"kind": "plugins", "plugins": [_plugin_summary(d) for d in plugins.values()]}
+    agents_dir = found.workspace / ".claude" / "agents"
+    return {
+        "kind": "repo",
+        "skills": sorted(skill.name for skill in found.skills),
+        "agents": _agent_names(agents_dir),
+    }
+
+
+def _plugin_summary(plugin_dir: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads((plugin_dir / _PLUGIN_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    version = manifest.get("version") if isinstance(manifest, dict) else None
+    return {
+        "name": _plugin_name(plugin_dir),
+        "version": version if isinstance(version, str) else None,
+        "skills": [_skill_name(skill_dir) for skill_dir in _skill_dirs(plugin_dir / "skills")],
+        "agents": _agent_names(plugin_dir / "agents"),
+    }
+
+
+def _agent_names(agents_dir: Path) -> list[str]:
+    """Subagent definitions: one markdown file each, named by its frontmatter or file name."""
+    if not agents_dir.is_dir():
+        return []
+    names = []
+    for agent_file in sorted(agents_dir.glob("*.md")):
+        name = _frontmatter(agent_file).get("name")
+        names.append(name if isinstance(name, str) and name else agent_file.stem)
+    return names

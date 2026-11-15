@@ -36,9 +36,9 @@ class RunOptions:
 
     executable: str  # the claude CLI
     eval_id: str  # shared by every run of one invocation
+    progress: Progress  # told as each step starts
     model_override: str | None = None
     ask_user: AskUser | None = None  # None when there is no terminal to ask live answers in
-    progress: Progress | None = None  # told about each turn's activity as it runs
 
     def model_for(self, spec: TestSpec) -> str | None:
         return self.model_override or spec.model
@@ -62,7 +62,7 @@ def run_test(
     workspace = None
     try:
         workspace, record["fixture_commit"] = create_workspace(spec.fixture, spec.fixture_exclude)
-        spec = _prepare_for_workspace(spec, workspace, run_dir / "plugins")
+        spec, record["subject"] = _prepare_for_workspace(spec, workspace, run_dir / "plugins")
     except (FixtureError, skills.SkillNotFoundError) as error:
         record |= _setup_failed_record(spec, options, workspace, setup_started, error)
     else:
@@ -76,6 +76,10 @@ def _run_context(spec: TestSpec, repeat_index: int) -> dict[str, Any]:
     """What the run was asked to do, recorded alongside what happened."""
     return {
         "kind": spec.kind,
+        "description": spec.description,
+        "subject": None,  # what is being tested; set once the workspace is ready
+        # The answers as written, so steps that never ran can still be shown.
+        "planned_answers": [] if spec.trigger is not None else spec.answers,
         "skill": spec.skill,
         "trigger": None if spec.trigger is None else vars(spec.trigger),
         "fixture": None if spec.fixture is None else str(spec.fixture),
@@ -86,16 +90,24 @@ def _run_context(spec: TestSpec, repeat_index: int) -> dict[str, Any]:
     }
 
 
-def _prepare_for_workspace(spec: TestSpec, workspace: Path, snapshot_dir: Path) -> TestSpec:
-    """Load every plugin and skill the repo has, plus the `plugin:` folders, and turn `skill:`
-    into the prompt that runs it (or, for a trigger run, the trigger prompt and the check that
-    the skill did or didn't fire). Raises SkillNotFoundError."""
+def _prepare_for_workspace(
+    spec: TestSpec, workspace: Path, snapshot_dir: Path
+) -> tuple[TestSpec, dict[str, Any]]:
+    """Load every plugin and skill the repo has, plus the `plugin:` folders, and work out what
+    the run tests. Returns the spec ready to run, and that subject. Raises SkillNotFoundError."""
     found = skills.discover(workspace, _snapshot_plugins(spec, snapshot_dir))
     skills.make_visible(workspace, found)
     spec = replace(spec, plugin_dirs=found.plugin_dirs)
-    if spec.skill is None:
+    target = skills.resolve(workspace, found, spec.skill) if spec.skill is not None else None
+    subject = skills.describe_subject(found, target)
+    return _with_skill_prompt(spec, target), subject
+
+
+def _with_skill_prompt(spec: TestSpec, target: skills.FoundSkill | None) -> TestSpec:
+    """Turn `skill:` into the prompt that runs it; for a trigger run, the trigger prompt and the
+    check that the skill did or didn't fire."""
+    if target is None:
         return spec
-    target = skills.resolve(workspace, found, spec.skill)
     if spec.trigger is None:
         return replace(spec, prompt=f"{target.invocation} {spec.skill_input}".strip())
     check = "skill_invoked" if spec.trigger.should_invoke else "skill_not_invoked"
@@ -192,19 +204,22 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
     launcher = _TurnLauncher(spec, options, workspace, raw_dir)
     answers = _AnswerSource(spec.answers, spec.is_interactive, options.ask_user)
     conversation = _Conversation()
+    between_turns = _BetweenTurns(
+        answers, conversation, workspace, spec.timeout_s, options.progress
+    )
     user_message: UserMessage | None = None
     while True:
         message = spec.prompt if user_message is None else user_message.text
         turn_number = len(conversation.turns) + 1
+        options.progress.step_started()
         outcome, info = launcher.run_turn(turn_number, message, conversation.session_to_resume)
         conversation.add_turn(user_message, outcome, info)
         stop = _stop_before_next_turn(conversation, answers)
         if stop is not None:
             conversation.stop = stop
             return conversation
-        agent_text = claude.final_text(info.trace["items"]) or ""
         try:
-            user_message = _next_message(answers, conversation, workspace, agent_text, spec)
+            user_message = between_turns.next_message(claude.final_text(info.trace["items"]) or "")
         except _LiveAnswerUnavailableError as error:
             conversation.stop = _Stop(_StopReason.NEEDS_LIVE_ANSWER, f"{spec.source_path}: {error}")
             return conversation
@@ -215,34 +230,46 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
             return conversation
 
 
-def _next_message(
-    answers: "_AnswerSource",
-    conversation: _Conversation,
-    workspace: Path,
-    agent_text: str,
-    spec: TestSpec,
-) -> UserMessage | None:
-    """The next message for Claude, after carrying out any `/clear` and `!command` answers that
-    come before it; None when the conversation is over. Raises _CommandFailedError."""
-    shown_to_user = agent_text
-    while (answer := answers.next_answer(shown_to_user)) is not None:
-        if answer.text == _CLEAR:
-            conversation.starts_fresh = True
-            conversation.pending_actions.append({"kind": "new_session"})
-            shown_to_user = "(the next message starts a fresh session)"
-        elif answer.text.startswith(_COMMAND_PREFIX):
-            command = answer.text.removeprefix(_COMMAND_PREFIX).strip()
-            result = run_shell(command, workspace, spec.timeout_s)
-            action = {"kind": "user_command", "command": command, **vars(result)}
-            conversation.pending_actions.append(action)
-            if not result.succeeded:
-                raise _CommandFailedError(
-                    f"'!{command}' exited with code {result.exit_code}: {result.output}"
-                )
-            shown_to_user = f"$ {command}\n{result.output}"
-        else:
-            return answer
-    return None
+@dataclass(frozen=True)
+class _BetweenTurns:
+    """Carries out the user's actions between turns: `/clear` and `!command` answers."""
+
+    answers: "_AnswerSource"
+    conversation: _Conversation
+    workspace: Path
+    timeout_s: float
+    progress: Progress
+
+    def next_message(self, agent_text: str) -> UserMessage | None:
+        """The next message for Claude, after carrying out any `/clear` and `!command` answers
+        that come before it; None when the conversation is over. Raises _CommandFailedError."""
+        shown_to_user = agent_text
+        while (answer := self.answers.next_answer(shown_to_user)) is not None:
+            if answer.text == _CLEAR:
+                shown_to_user = self._clear()
+            elif answer.text.startswith(_COMMAND_PREFIX):
+                shown_to_user = self._run(answer.text.removeprefix(_COMMAND_PREFIX).strip())
+            else:
+                return answer
+        return None
+
+    def _clear(self) -> str:
+        self.progress.step_started()
+        self.conversation.starts_fresh = True
+        self.conversation.pending_actions.append({"kind": "new_session"})
+        return "(the next message starts a fresh session)"
+
+    def _run(self, command: str) -> str:
+        self.progress.step_started()
+        result = run_shell(command, self.workspace, self.timeout_s)
+        self.conversation.pending_actions.append(
+            {"kind": "user_command", "command": command, **vars(result)}
+        )
+        if not result.succeeded:
+            raise _CommandFailedError(
+                f"'!{command}' exited with code {result.exit_code}: {result.output}"
+            )
+        return f"$ {command}\n{result.output}"
 
 
 def _stop_before_next_turn(conversation: _Conversation, answers: "_AnswerSource") -> _Stop | None:
@@ -315,55 +342,33 @@ class _TurnLauncher:
             self._spec.plugin_dirs,
         )
         stdout_path = self._raw_dir / f"{turn_number}.jsonl"
-        watcher = _TurnWatcher(stdout_path, turn_number, self._options.progress)
+        stop_at_skill_call = _SkillCallWatcher(stdout_path) if self._spec.trigger else None
         outcome = _run_process(
-            command, self._workspace, stdout_path, self._spec.timeout_s, self._stop_check(watcher)
+            command, self._workspace, stdout_path, self._spec.timeout_s, stop_at_skill_call
         )
         return outcome, claude.parse_stream(stdout_path.read_bytes())
 
-    def _stop_check(self, watcher: "_TurnWatcher") -> Callable[[], bool] | None:
-        """What to check while the turn runs: a trigger run stops at its first skill call;
-        otherwise the watcher only reports progress, if anyone is listening."""
-        if self._spec.trigger is not None:
-            return watcher.has_invoked_a_skill
-        return watcher.report if self._options.progress is not None else None
 
+class _SkillCallWatcher:
+    """For a trigger run: re-reads the running turn's output whenever it grows, and says to stop
+    once any skill has been invoked (that's the decision being tested)."""
 
-class _TurnWatcher:
-    """Re-reads a running turn's output whenever it grows, to report its latest tool call and
-    to see whether a skill has been invoked yet."""
-
-    def __init__(self, stdout_path: Path, turn_number: int, progress: Progress | None) -> None:
+    def __init__(self, stdout_path: Path) -> None:
         self._stdout_path = stdout_path
-        self._turn_number = turn_number
-        self._progress = progress
         self._seen_size = -1
-        self._tool_names: list[str] = []
-        if progress is not None:
-            progress.activity(turn_number, None)
 
-    def report(self) -> bool:
-        """Tell progress about the newest tool call; never asks for the turn to stop."""
-        self._refresh()
-        return False
-
-    def has_invoked_a_skill(self) -> bool:
-        self._refresh()
-        return claude.SKILL_TOOL in self._tool_names
-
-    def _refresh(self) -> None:
+    def __call__(self) -> bool:
         try:
             size = self._stdout_path.stat().st_size
         except OSError:
-            return
+            return False
         if size == self._seen_size:
-            return
+            return False
         self._seen_size = size
         trace = claude.parse_stream(self._stdout_path.read_bytes()).trace
-        self._tool_names = [call["name"] for call in claude.walk_tool_calls(trace["items"])]
-        if self._progress is not None:
-            last_tool = self._tool_names[-1] if self._tool_names else None
-            self._progress.activity(self._turn_number, last_tool)
+        return any(
+            call["name"] == claude.SKILL_TOOL for call in claude.walk_tool_calls(trace["items"])
+        )
 
 
 # --- the run record ------------------------------------------------------------------------

@@ -1,107 +1,95 @@
-"""What the terminal shows while runs go: a live status with the current turn, the latest tool
-call, elapsed time, an overall bar and an ETA; or, when output isn't a terminal, plain lines."""
+"""What the terminal shows while tests run: one line per test, a spinner while it runs and its
+result when it ends, with a short reason when it didn't pass. The details live in the
+dashboard."""
 
-import json
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from rich.console import Console, Group
+from rich.console import Console
 from rich.live import Live
-from rich.progress_bar import ProgressBar
-from rich.table import Table
+from rich.spinner import Spinner
 from rich.text import Text
 
-_RUN_RECORD_FILE_NAME = "run.json"
-_REFRESHES_PER_SECOND = 4
-# The bar never shows a run as done before it is, however long it overruns its estimate.
-_MAX_RUN_FRACTION = 0.95
-_BAR_WIDTH = 30
+_REFRESHES_PER_SECOND = 8
+_REASON_CHARS = 100
+_MARKS = {"pass": "✓", "fail": "✗", "error": "✗"}
+_PLAIN_MARKS = {"pass": "ok  ", "fail": "FAIL", "error": "FAIL"}
+_STYLES = {"pass": "green", "fail": "red", "error": "red"}
+_STATUS_WORDS = {"pass": "passed", "fail": "failed", "error": "error"}
 
 
 @dataclass(frozen=True)
-class RunHeading:
+class TestHeading:
     """What is about to run."""
 
-    index: int  # 1-based position among all runs of this invocation
-    total: int
-    test_name: str
-    model: str | None
-    planned_turns: int | None  # the prompt plus scripted answers; None if not known up front
-    repeat_index: int = 1
-    repeat_count: int = 1
+    title: str  # the test's name, with its repeat number when repeated
+    planned_steps: int | None  # the prompt plus scripted answers; None when answered live
+    name_width: int  # the longest test name in this invocation, to line results up
 
 
 class Progress(Protocol):
-    def run_started(self, heading: RunHeading, eta: "Eta") -> None: ...
+    def test_started(self, heading: TestHeading) -> None: ...
 
-    def activity(self, turn: int, last_tool: str | None) -> None: ...
+    def step_started(self) -> None: ...
 
-    def run_finished(self, line: str) -> None: ...
+    def test_finished(self, record: dict[str, Any]) -> None: ...
 
     def pause(self) -> None: ...
 
     def resume(self) -> None: ...
 
 
-def load_history(runs_root: Path) -> dict[str, float]:
-    """The most recent duration of each test recorded under runs_root."""
-    latest: dict[str, tuple[str, float]] = {}
-    if not runs_root.is_dir():
-        return {}
-    for record_path in runs_root.glob(f"*/{_RUN_RECORD_FILE_NAME}"):
-        try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-            key = record["test_name"]
-            started, duration = record["start_time"], float(record["duration_s"])
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if duration <= 0 or record.get("stop_reason") == "setup_failed":
-            continue
-        if key not in latest or started > latest[key][0]:
-            latest[key] = (started, duration)
-    return {key: duration for key, (_, duration) in latest.items()}
+def make_progress() -> Progress:
+    """A spinner in a terminal, plain lines otherwise."""
+    return LiveProgress() if sys.stdout.isatty() else PlainProgress()
 
 
-class Eta:
-    """Estimates how long the rest of the invocation takes. Each run's estimate is its test's
-    last recorded duration, else the mean of runs finished so far; if any run
-    still has no estimate, there is no ETA rather than a made-up one."""
+def result_line(record: dict[str, Any], heading: TestHeading) -> str:
+    """A finished test's line: name, verdict, time and cost."""
+    status = record["status"]
+    cells = [
+        heading.title.ljust(heading.name_width),
+        _STATUS_WORDS.get(status, status).ljust(6),
+        format_seconds(record["duration_s"]).rjust(6),
+    ]
+    if record["trace"].get("cost_usd") is not None:
+        cells.append(f"${record['trace']['cost_usd']:.2f}")
+    return "   ".join(cells)
 
-    def __init__(self, history: dict[str, float], run_keys: list[str]) -> None:
-        self._history = history
-        self._run_keys = run_keys
-        self._finished: list[float] = []
-        self._current = 0  # index into run_keys of the run in progress
 
-    def start_run(self, index: int) -> None:
-        self._current = index
-
-    def finish_run(self, duration_s: float) -> None:
-        self._finished.append(duration_s)
-
-    def estimate(self, key: str) -> float | None:
-        if key in self._history:
-            return self._history[key]
-        if self._finished:
-            return sum(self._finished) / len(self._finished)
+def why_not_passed(record: dict[str, Any]) -> str | None:
+    """One line saying why a test didn't pass: where the run stopped, or the first failed
+    check. None when it passed."""
+    if record["status"] == "pass":
         return None
+    if error := run_error(record):
+        steps = steps_taken(record)
+        problem = error.splitlines()[0]
+        reason = f"stopped at step {steps}: {problem}" if steps else problem
+    else:
+        checks = record["assertions"]
+        failed = [check for check in checks if not check["passed"]]
+        reason = f"{len(failed)} of {len(checks)} checks failed: {_format_check(failed[0])}"
+    return shorten(reason, _REASON_CHARS)
 
-    def remaining_s(self, elapsed_s: float) -> float | None:
-        estimates = [self.estimate(key) for key in self._run_keys[self._current :]]
-        if any(estimate is None for estimate in estimates):
-            return None
-        current, *later = estimates
-        return max(current - elapsed_s, 0.0) + sum(later)
 
-    def fraction_done(self, elapsed_s: float) -> float:
-        if not self._run_keys:
-            return 1.0
-        estimate = self.estimate(self._run_keys[self._current])
-        current_fraction = min(elapsed_s / estimate, _MAX_RUN_FRACTION) if estimate else 0.0
-        return (self._current + current_fraction) / len(self._run_keys)
+def run_error(record: dict[str, Any]) -> str:
+    """The run's error without the test file it came from (already shown), or ''."""
+    return (record.get("error") or "").removeprefix(f"{record['test_file']}: ")
+
+
+def _format_check(result: dict[str, Any]) -> str:
+    """A check as written in the test, e.g. `tool_order Read -> Edit`."""
+    expected = result["expected"]
+    if isinstance(expected, list):
+        expected = " -> ".join(map(str, expected))
+    elif isinstance(expected, dict):
+        expected = " ".join(
+            repr(value) if key == "text" else str(value) for key, value in expected.items()
+        )
+    return f"{result['type']} {expected}"
 
 
 def format_seconds(seconds: float) -> str:
@@ -115,51 +103,36 @@ def format_seconds(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
-def describe_run(heading: RunHeading) -> str:
-    repeat = (
-        f" (repeat {heading.repeat_index}/{heading.repeat_count})"
-        if heading.repeat_count > 1
-        else ""
-    )
-    model = heading.model or "default model"
-    return f"[{heading.index}/{heading.total}] {heading.test_name}{repeat}  {model}"
+def steps_taken(record: dict[str, Any]) -> int:
+    """The prompt plus every answer acted on (sent, run, or /clear)."""
+    if record.get("stop_reason") == "setup_failed":
+        return 0
+    actions = ("user_message", "user_command", "new_session")
+    return 1 + sum(1 for item in record["trace"]["items"] if item["kind"] in actions)
 
 
-class PlainProgress:
-    """For pipes and CI: one line when a run starts and one when it ends, no escape codes."""
+def shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
-    def run_started(self, heading: RunHeading, eta: Eta) -> None:
-        print(describe_run(heading), flush=True)
 
-    def activity(self, turn: int, last_tool: str | None) -> None:
-        pass
-
-    def run_finished(self, line: str) -> None:
-        print(line, flush=True)
-
-    def pause(self) -> None:
-        pass
-
-    def resume(self) -> None:
-        pass
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 class LiveProgress:
-    """A status block redrawn in place while a run goes, replaced by its result line after."""
+    """A spinner line for the running test, replaced by its result line."""
 
     def __init__(self) -> None:
         self._console = Console(highlight=False)
         self._live: Live | None = None
-        self._heading = RunHeading(0, 0, "", None, None)
-        self._eta = Eta({}, [])
+        self._spinner = Spinner("dots")
+        self._heading = TestHeading("", None, 0)
+        self._steps_started = 0
         self._started = 0.0
-        self._turn = 1
-        self._last_tool: str | None = None
 
-    def run_started(self, heading: RunHeading, eta: Eta) -> None:
-        self._heading, self._eta = heading, eta
+    def test_started(self, heading: TestHeading) -> None:
+        self._heading, self._steps_started = heading, 0
         self._started = time.monotonic()
-        self._turn, self._last_tool = 1, None
         self._live = Live(
             get_renderable=self._render,
             console=self._console,
@@ -168,15 +141,16 @@ class LiveProgress:
         )
         self._live.start()
 
-    def activity(self, turn: int, last_tool: str | None) -> None:
-        if turn != self._turn:
-            self._turn, self._last_tool = turn, None
-        self._last_tool = last_tool or self._last_tool
+    def step_started(self) -> None:
+        self._steps_started += 1
 
-    def run_finished(self, line: str) -> None:
+    def test_finished(self, record: dict[str, Any]) -> None:
         self.pause()
         self._live = None
-        self._console.print(line, markup=False)
+        status, line = record["status"], result_line(record, self._heading)
+        self._console.print(Text(f"{_MARKS.get(status, '?')} {line}", style=_STYLES.get(status)))
+        if (reason := why_not_passed(record)) is not None:
+            self._console.print(Text(f"    {reason}", style="dim"))
 
     def pause(self) -> None:
         if self._live is not None:
@@ -186,34 +160,36 @@ class LiveProgress:
         if self._live is not None:
             self._live.start()
 
-    def _render(self) -> Group:
-        elapsed = time.monotonic() - self._started
-        return Group(
-            Text(describe_run(self._heading), style="bold"),
-            Text(self._activity_line(elapsed), style="dim"),
-            self._bar(elapsed),
-        )
-
-    def _activity_line(self, elapsed: float) -> str:
-        planned = self._heading.planned_turns
-        turns = f"{self._turn}/{planned}" if planned else str(self._turn)
-        doing = self._last_tool or "thinking"
-        return f"  turn {turns} · {doing} · {format_seconds(elapsed)} elapsed"
-
-    def _bar(self, elapsed: float) -> Table:
-        fraction = self._eta.fraction_done(elapsed)
-        remaining = self._eta.remaining_s(elapsed)
-        estimate = "" if remaining is None else f"est. {format_seconds(remaining)} left"
-        bar = Table.grid(padding=(0, 1))
-        bar.add_row(
-            Text(" "),
-            ProgressBar(total=1.0, completed=fraction, width=_BAR_WIDTH),
-            Text(f"{fraction:>4.0%}"),
-            Text(estimate),
-        )
-        return bar
+    def _render(self) -> Spinner:
+        heading = self._heading
+        planned = f" of {heading.planned_steps}" if heading.planned_steps else ""
+        step = f"step {max(self._steps_started, 1)}{planned}"
+        elapsed = format_seconds(time.monotonic() - self._started)
+        self._spinner.update(text=f"{heading.title.ljust(heading.name_width)}   {step}   {elapsed}")
+        return self._spinner
 
 
-def make_progress() -> Progress:
-    """Live in a terminal, plain lines otherwise."""
-    return LiveProgress() if sys.stdout.isatty() else PlainProgress()
+class PlainProgress:
+    """For pipes and CI: a line when each test starts and its result when it ends."""
+
+    def __init__(self) -> None:
+        self._heading = TestHeading("", None, 0)
+
+    def test_started(self, heading: TestHeading) -> None:
+        self._heading = heading
+        print(f"...  {heading.title}", flush=True)
+
+    def step_started(self) -> None:
+        pass
+
+    def test_finished(self, record: dict[str, Any]) -> None:
+        mark = _PLAIN_MARKS.get(record["status"], "?   ")
+        print(f"{mark} {result_line(record, self._heading)}", flush=True)
+        if (reason := why_not_passed(record)) is not None:
+            print(f"       {reason}", flush=True)
+
+    def pause(self) -> None:
+        pass
+
+    def resume(self) -> None:
+        pass
