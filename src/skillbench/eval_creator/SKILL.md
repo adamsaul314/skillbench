@@ -12,10 +12,11 @@ The user describes what they want to test (in the arguments or the conversation)
 
 1. **Find the project.** Look for a `skillbench/` folder with `skillbench.yaml` at or above the current directory. If there is none, run `skillbench init`, then delete the two sample tests (`skillbench/skills/example.yaml`, `skillbench/agent/example.yaml`) and the sample repo (`skillbench/fixtures/sample-repo/`) unless the user wants them.
 2. **Read what is being tested.** Find the skills involved and read each `SKILL.md`: its `name`, its `description`, and whether its frontmatter has `disable-model-invocation: true` (then it can only be started by its `/command`, so Claude will never pick it by itself). Skills live in `.claude/skills/<name>/`, `skills/<name>/`, `.github/skills/<name>/`, or a plugin's `skills/<name>/`. A plugin is a folder with `.claude-plugin/plugin.json`; its skills are called `/<plugin>:<skill>`, and its subagents are in `agents/`.
-3. **Ask only what you can't find out.** Usually at most: which repo the agent should work on, and what a good result looks like. Don't ask about things you can read from the files.
-4. **Write the test files**, following the format below. One test per file, named after what it checks (`grilling-asks-first.yaml`). Skill tests go in `skillbench/skills/`, agent tests in `skillbench/agent/`.
-5. **Validate.** Run `skillbench check`. It costs nothing. Fix every error it reports and run it again until it passes.
-6. **Hand over.** List the files you wrote and what each checks, then give the exact command to run them, with the cheapest model for a first try, e.g. `skillbench skill grilling --model claude-haiku-5-5`. For a workflow whose answers you had to guess, suggest a first run with `interactive: true`.
+3. **Load the plugin, if this repo is one.** If the repo root has `.claude-plugin/plugin.json` and any test you write uses a `fixture:` other than `.`, then `skillbench/skillbench.yaml` must contain `plugin: .`. Add it if it's missing. Without it, the agent in the other repo has none of this plugin's skills or subagents, and every `/<plugin>:...` command fails.
+4. **Ask only what you can't find out.** Usually at most: which repo the agent should work on, and what a good result looks like. Don't ask about things you can read from the files.
+5. **Write the test files**, following the format below. One test per file, named after what it checks (`grilling-asks-first.yaml`). Skill tests go in `skillbench/skills/`, agent tests in `skillbench/agent/`.
+6. **Validate.** Run `skillbench check`. It costs nothing. Fix every error and warning it reports and run it again until it is clean.
+7. **Hand over.** List the files you wrote and what each checks, then give the exact command to run them, with the cheapest model for a first try, e.g. `skillbench skill grilling --model claude-haiku-5-5`. For a workflow whose answers you had to guess, suggest a first run with `interactive: true`.
 
 ## Choosing the kind of test
 

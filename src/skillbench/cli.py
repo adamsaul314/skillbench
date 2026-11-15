@@ -129,19 +129,22 @@ def _check_command(project: Project) -> int:
     """Load every test file and report each one's problems, without running anything."""
     problems = 0
     checked = 0
+    specs: list[TestSpec] = []
     for kind in TEST_FOLDERS:
         tests_dir = project.tests_dir(kind)
         test_files = sorted(tests_dir.rglob("*.yaml")) if tests_dir.is_dir() else []
         for test_path in test_files:
             checked += 1
             try:
-                load_test(test_path, project, kind)
+                specs.append(load_test(test_path, project, kind))
             except ConfigError as error:
                 problems += 1
                 problem = str(error).removeprefix(f"{test_path}: ")
-                print(f"error  {_shown_path(test_path)}: {problem}")
+                print(f"error    {_shown_path(test_path)}: {problem}")
             else:
-                print(f"ok     {_shown_path(test_path)}")
+                print(f"ok       {_shown_path(test_path)}")
+    if (warning := _missing_plugin_warning(project, specs)) is not None:
+        print(f"warning  {warning}")
     if checked == 0:
         print(f"no test files yet in {_shown_path(project.directory)}/skills or /agent")
     elif problems == 0:
@@ -149,6 +152,22 @@ def _check_command(project: Project) -> int:
     else:
         print(f"\n{problems} of {_plural(checked, 'test file')} have problems")
     return _EXIT_OK if problems == 0 else _EXIT_USAGE_ERROR
+
+
+def _missing_plugin_warning(project: Project, specs: list[TestSpec]) -> str | None:
+    """The repo is a plugin, but tests run on other repos without `plugin: .`, so they won't
+    have it."""
+    is_plugin_repo = (project.repo_root / ".claude-plugin" / "plugin.json").is_file()
+    if not is_plugin_repo or project.plugins:
+        return None
+    elsewhere = [spec.name for spec in specs if spec.fixture != project.repo_root.resolve()]
+    if not elsewhere:
+        return None
+    return (
+        f"this repo is a plugin, but skillbench.yaml has no 'plugin: .', so tests that run on "
+        f"another repo won't have it loaded ({', '.join(elsewhere)}). Add 'plugin: .' to "
+        f"{_shown_path(project.directory / 'skillbench.yaml')}"
+    )
 
 
 # --- choosing tests ------------------------------------------------------------------------
