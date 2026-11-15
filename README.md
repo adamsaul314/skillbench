@@ -46,7 +46,7 @@ skillbench skill
 skillbench agent
 ```
 
-**4. Look at the results.** Open `skillbench/runs/index.html` in your browser. Each run shows what it tested, its steps, why it didn't pass (if it didn't), and everything Claude did.
+**4. Look at the results.** Open `skillbench/runs/index.html` in your browser. The list on the left groups runs by what they test (a skill, a plugin, or this repo), newest first. Expand a group to see its tests. Click a test to see its run.
 
 Now write your own tests: next section.
 
@@ -76,7 +76,9 @@ Then in Claude Code, in your repo, say what you want to test:
 /eval-creator test that my grilling skill asks questions before writing anything
 ```
 
-It reads your skills, asks what it can't work out, writes the test files and checks them. It never runs them, so you decide when to spend tokens. Run `skillbench install-skill` again after you upgrade skillbench.
+It reads your skills, then proposes the tests in plain words: what each one runs, what it checks, when it passes, and a rough cost. Nothing is written until you reply **approve**. Ask for changes and it proposes again. Once approved, it writes the files and checks them. It never runs them, so you decide when to spend tokens.
+
+Run `skillbench install-skill` again after you upgrade skillbench.
 
 Whichever way you write tests, check them for free before running:
 
@@ -222,7 +224,7 @@ details: skillbench/runs/index.html
 | `fail` | Claude finished, but a check failed |
 | `error` | The run stopped: Claude crashed or timed out, a `!` command failed, or the skill or repo couldn't be found |
 
-For the details, open `skillbench/runs/index.html`: what was tested, each step, why it didn't pass, Claude's last message, every check, and the full timeline of messages and tool calls.
+For the details, open `skillbench/runs/index.html`. Each run page starts with the answer: whether it passed, and if not, the step it stopped at or the checks that failed. Below that are the steps in plain words, the checks as sentences, Claude's last message and the numbers. The full timeline of messages and tool calls, and the raw output, are collapsed at the end.
 
 **Keep costs down.** Every run is a real Claude session. Use `--model claude-haiku-5-5` while you're getting a test right, start with skill tests, and run long workflows only when you need to.
 
