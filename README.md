@@ -208,3 +208,16 @@ A test's own settings win over these, and command-line flags win over both.
 | `pass` | Every check passed |
 | `fail` | Claude finished, but a check failed |
 | `error` | Claude crashed or timed out, or the skill or fixture couldn't be found |
+
+---
+
+## Releasing a new version (maintainers)
+
+From an up-to-date `main` with no uncommitted changes:
+
+```
+scripts/release.sh 0.2.0 --dry-run   # bump, lint, build and test the install, then undo
+scripts/release.sh 0.2.0             # the same, then commit, tag, publish to PyPI and push
+```
+
+Publishing needs a PyPI API token: `export UV_PUBLISH_TOKEN=pypi-...` first, or uv asks for it.
