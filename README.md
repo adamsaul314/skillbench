@@ -51,7 +51,30 @@ dashboard: skillbench/runs/index.html
 
 Open `skillbench/runs/index.html` in your browser to see exactly what Claude did: every message, tool call and check.
 
-That's it. The rest of this page shows how to write your own tests.
+That's it. The rest of this page shows how to write your own tests, or you can let Claude write them.
+
+### Let Claude write your tests
+
+skillbench comes with a Claude Code skill that writes test files for you. Install it once:
+
+```
+skillbench install-skill
+```
+
+Then, in Claude Code in your repo, say what you want to test:
+
+```
+/eval-creator test that my grilling skill asks questions before writing anything
+/eval-creator a full loop test of my workflow on https://github.com/me/test-app
+```
+
+It reads your skills, asks anything it can't work out, writes the files into `skillbench/`, and checks them. It never runs them, so you decide when to spend tokens. Run `skillbench install-skill` again after upgrading skillbench to keep it in step.
+
+To check test files yourself, for free, without running anything:
+
+```
+skillbench check
+```
 
 ---
 

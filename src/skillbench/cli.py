@@ -1,6 +1,7 @@
-"""The `skillbench` command line: `init`, `skill` and `agent`."""
+"""The `skillbench` command line: `init`, `skill`, `agent`, `check` and `install-skill`."""
 
 import argparse
+import importlib.resources
 import sys
 import uuid
 from collections import Counter
@@ -23,6 +24,9 @@ _SUMMARY_HEADER = ("test", "status", "duration", "turns")
 _ANSWER_PROMPT = "your answer (empty or /done to finish): "
 _NO_PROJECT = "no skillbench/ folder here or above; run `skillbench init` to create one"
 _TRIGGER_PROMPT_SHOWN_CHARS = 40
+_EVAL_CREATOR = "eval-creator"
+# Personal skills: in every project, and never loaded into test runs (they ignore user config).
+_PERSONAL_SKILLS_DIR = Path.home() / ".claude" / "skills"
 
 
 class _UsageError(Exception):
@@ -33,15 +37,25 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "init":
         return _init_command()
+    if args.command == "install-skill":
+        return _install_skill_command()
     try:
         project = find_project(Path.cwd())
         if project is None:
             raise _UsageError(_NO_PROJECT)
+        if args.command == "check":
+            return _check_command(project)
         specs = _load_specs(project, args.command, args.target)
         executable = find_claude()
     except (ConfigError, ClaudeNotFoundError, _UsageError) as error:
         print(f"skillbench: {error}", file=sys.stderr)
         return _EXIT_USAGE_ERROR
+    return _run_command(args, project, specs, executable)
+
+
+def _run_command(
+    args: argparse.Namespace, project: Project, specs: list[TestSpec], executable: str
+) -> int:
     progress = make_progress()
     options = RunOptions(
         executable=executable,
@@ -70,6 +84,10 @@ def _parser() -> argparse.ArgumentParser:
         test_parser.add_argument(
             "--repeat", type=_positive_int, metavar="N", help="run each test N times"
         )
+    commands.add_parser("check", help="check every test file is valid, without running anything")
+    commands.add_parser(
+        "install-skill", help=f"add the /{_EVAL_CREATOR} skill to Claude Code, to write tests"
+    )
     return parser
 
 
@@ -88,6 +106,49 @@ def _init_command() -> int:
     if created:
         print("\nnext: edit the sample tests, then run `skillbench skill` or `skillbench agent`")
     return _EXIT_OK
+
+
+def _install_skill_command() -> int:
+    """Copy the eval-creator skill that matches this skillbench version into the user's
+    personal skills."""
+    source = importlib.resources.files("skillbench") / "eval_creator" / "SKILL.md"
+    content = source.read_text(encoding="utf-8")
+    target = _PERSONAL_SKILLS_DIR / _EVAL_CREATOR / "SKILL.md"
+    if target.is_file() and target.read_text(encoding="utf-8") == content:
+        print(f"/{_EVAL_CREATOR} is already installed and up to date: {target}")
+        return _EXIT_OK
+    action = "updated" if target.exists() else "installed"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    print(f"{action} /{_EVAL_CREATOR}: {target}")
+    print(f"\nnext: in Claude Code, type /{_EVAL_CREATOR} and what you want to test")
+    return _EXIT_OK
+
+
+def _check_command(project: Project) -> int:
+    """Load every test file and report each one's problems, without running anything."""
+    problems = 0
+    checked = 0
+    for kind in TEST_FOLDERS:
+        tests_dir = project.tests_dir(kind)
+        test_files = sorted(tests_dir.rglob("*.yaml")) if tests_dir.is_dir() else []
+        for test_path in test_files:
+            checked += 1
+            try:
+                load_test(test_path, project, kind)
+            except ConfigError as error:
+                problems += 1
+                problem = str(error).removeprefix(f"{test_path}: ")
+                print(f"error  {_shown_path(test_path)}: {problem}")
+            else:
+                print(f"ok     {_shown_path(test_path)}")
+    if checked == 0:
+        print(f"no test files yet in {_shown_path(project.directory)}/skills or /agent")
+    elif problems == 0:
+        print(f"\nall {_plural(checked, 'test file')} are valid")
+    else:
+        print(f"\n{problems} of {_plural(checked, 'test file')} have problems")
+    return _EXIT_OK if problems == 0 else _EXIT_USAGE_ERROR
 
 
 # --- choosing tests ------------------------------------------------------------------------
