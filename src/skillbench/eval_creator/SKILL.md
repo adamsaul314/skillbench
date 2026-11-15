@@ -44,6 +44,7 @@ A skill test:
 
 ```yaml
 name: grilling-asks-first          # optional; defaults to the file name
+description: Grilling asks questions before it writes anything.
 skill: grilling                    # skill name, plugin:skill, or path to the skill folder
 input: an idea for a todo app      # sent as "/<plugin>:grilling an idea for a todo app"
 fixture: .
@@ -74,7 +75,9 @@ assert:
   - command_succeeds: python -m pytest -q
 ```
 
-All fields: `name`, `skill`, `input`, `triggers` (with `should` / `should_not`), `prompt`, `fixture`, `answers`, `interactive` (true/false), `timeout_s` (seconds per turn, default 600), `repeat`, `min_pass_rate` (0 to 1), `assert`. A test has either `skill` or `prompt`, never both. `input` and `triggers` need `skill`. Any other field is an error.
+Always write a `description:`: one plain sentence saying what the test checks, in the user's terms ("The full loop builds calcDamage and passes the final review."). The dashboard shows it under the test's name, so anyone can see what a test is for.
+
+All fields: `name`, `description`, `skill`, `input`, `triggers` (with `should` / `should_not`), `prompt`, `fixture`, `answers`, `interactive` (true/false), `timeout_s` (seconds per turn, default 600), `repeat`, `min_pass_rate` (0 to 1), `assert`. A test has either `skill` or `prompt`, never both. `input` and `triggers` need `skill`. Any other field is an error.
 
 `skillbench/skillbench.yaml` may set defaults: `plugin`, `model`, `timeout_s`, `repeat`, `min_pass_rate`, `fixture`.
 

@@ -49,7 +49,7 @@ hello-greets-by-name: pass in 2.3s
 dashboard: skillbench/runs/index.html
 ```
 
-Open `skillbench/runs/index.html` in your browser to see exactly what Claude did: every message, tool call and check.
+Open `skillbench/runs/index.html` in your browser. Each run opens with what it tests (your skill, or your plugin and its version), the test's steps, and, if it didn't pass, why. Below that is exactly what Claude did: every message, tool call and check.
 
 That's it. The rest of this page shows how to write your own tests, or you can let Claude write them.
 
@@ -92,6 +92,7 @@ skillbench check
 `skillbench/skills/grilling.yaml`
 
 ```yaml
+description: Grilling asks questions before it writes anything.
 skill: grilling                 # your skill's name
 input: an idea for a todo app   # what to send it
 fixture: .                      # run it on a copy of this repo
@@ -278,6 +279,7 @@ A test's own settings win over these, and command-line flags win over both.
 | `fixture` | Which repo Claude works in |
 | `assert` | The checks |
 | `name` | A display name (defaults to the file name) |
+| `description` | One sentence saying what the test checks; shown in the dashboard |
 | `timeout_s`, `repeat`, `min_pass_rate` | As above |
 
 ---

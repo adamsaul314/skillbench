@@ -62,7 +62,7 @@ def run_test(
     workspace = None
     try:
         workspace, record["fixture_commit"] = create_workspace(spec.fixture, spec.fixture_exclude)
-        spec = _prepare_for_workspace(spec, workspace, run_dir / "plugins")
+        spec, record["subject"] = _prepare_for_workspace(spec, workspace, run_dir / "plugins")
     except (FixtureError, skills.SkillNotFoundError) as error:
         record |= _setup_failed_record(spec, options, workspace, setup_started, error)
     else:
@@ -76,6 +76,10 @@ def _run_context(spec: TestSpec, repeat_index: int) -> dict[str, Any]:
     """What the run was asked to do, recorded alongside what happened."""
     return {
         "kind": spec.kind,
+        "description": spec.description,
+        "subject": None,  # what is being tested; set once the workspace is ready
+        # The answers as written, so steps that never ran can still be shown.
+        "planned_answers": [] if spec.trigger is not None else spec.answers,
         "skill": spec.skill,
         "trigger": None if spec.trigger is None else vars(spec.trigger),
         "fixture": None if spec.fixture is None else str(spec.fixture),
@@ -86,16 +90,24 @@ def _run_context(spec: TestSpec, repeat_index: int) -> dict[str, Any]:
     }
 
 
-def _prepare_for_workspace(spec: TestSpec, workspace: Path, snapshot_dir: Path) -> TestSpec:
-    """Load every plugin and skill the repo has, plus the `plugin:` folders, and turn `skill:`
-    into the prompt that runs it (or, for a trigger run, the trigger prompt and the check that
-    the skill did or didn't fire). Raises SkillNotFoundError."""
+def _prepare_for_workspace(
+    spec: TestSpec, workspace: Path, snapshot_dir: Path
+) -> tuple[TestSpec, dict[str, Any]]:
+    """Load every plugin and skill the repo has, plus the `plugin:` folders, and work out what
+    the run tests. Returns the spec ready to run, and that subject. Raises SkillNotFoundError."""
     found = skills.discover(workspace, _snapshot_plugins(spec, snapshot_dir))
     skills.make_visible(workspace, found)
     spec = replace(spec, plugin_dirs=found.plugin_dirs)
-    if spec.skill is None:
+    target = skills.resolve(workspace, found, spec.skill) if spec.skill is not None else None
+    subject = skills.describe_subject(found, target, is_trigger=spec.trigger is not None)
+    return _with_skill_prompt(spec, target), subject
+
+
+def _with_skill_prompt(spec: TestSpec, target: skills.FoundSkill | None) -> TestSpec:
+    """Turn `skill:` into the prompt that runs it; for a trigger run, the trigger prompt and the
+    check that the skill did or didn't fire."""
+    if target is None:
         return spec
-    target = skills.resolve(workspace, found, spec.skill)
     if spec.trigger is None:
         return replace(spec, prompt=f"{target.invocation} {spec.skill_input}".strip())
     check = "skill_invoked" if spec.trigger.should_invoke else "skill_not_invoked"

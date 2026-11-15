@@ -66,7 +66,7 @@ def why_not_passed(record: dict[str, Any]) -> str | None:
         return None
     if record.get("error"):
         problem = record["error"].removeprefix(f"{record['test_file']}: ").splitlines()[0]
-        steps = _steps_taken(record)
+        steps = steps_taken(record)
         reason = f"stopped at step {steps}: {problem}" if steps else problem
         return _shorten(reason, _REASON_CHARS)
     checks = record["assertions"]
@@ -104,7 +104,7 @@ def _title(record: dict[str, Any]) -> str:
     return record["test_name"]
 
 
-def _steps_taken(record: dict[str, Any]) -> int:
+def steps_taken(record: dict[str, Any]) -> int:
     """The prompt plus every answer acted on (sent, run, or /clear)."""
     if record.get("stop_reason") == "setup_failed":
         return 0
