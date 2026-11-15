@@ -7,6 +7,8 @@ Each item is one of
     {"kind": "assistant_text", "text": str}
     {"kind": "tool_call", "id", "name", "input", "output", "ok", "children": [items]}
     {"kind": "user_message", "turn": int, "text": str, "source": "scripted" | "live"}
+    {"kind": "user_command", "command": str, "exit_code": int, "output": str}
+    {"kind": "new_session"}
     {"kind": "unknown", "raw_type": str}
 Items emitted inside a subagent go into the `children` of the tool call that spawned it. A
 multi-turn run's trace is the turns' traces joined in order, each turn after the first preceded
@@ -138,17 +140,19 @@ def final_text(items: list[dict[str, Any]]) -> str | None:
     return texts[-1] if texts else None
 
 
-def merge_turns(turns: list[tuple[UserMessage | None, dict[str, Any]]]) -> dict[str, Any]:
-    """One trace for the whole conversation from each turn's (starting message, trace): items in
-    order, usage, cost and turn counts summed."""
+def merge_turns(
+    turns: list[tuple[list[dict[str, Any]], UserMessage | None, dict[str, Any]]],
+) -> dict[str, Any]:
+    """One trace for the whole conversation from each turn's (items before it, starting message,
+    trace): items in order, usage, cost and turn counts summed. The items before a turn are the
+    user's own actions between turns (commands run, a fresh session started)."""
     items: list[dict[str, Any]] = []
-    for turn_number, (message, trace) in enumerate(turns, start=1):
+    for turn_number, (preface, message, trace) in enumerate(turns, start=1):
+        items += preface
         if message is not None:
-            items.append(
-                {"kind": "user_message", "turn": turn_number, **vars(message)},
-            )
+            items.append({"kind": "user_message", "turn": turn_number, **vars(message)})
         items += trace["items"]
-    traces = [trace for _, trace in turns]
+    traces = [trace for _, _, trace in turns]
     return {
         "items": items,
         "usage": _sum_usage([trace["usage"] for trace in traces]),

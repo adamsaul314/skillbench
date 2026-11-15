@@ -44,7 +44,7 @@ def create_workspace(fixture: Fixture | None, exclude: Path) -> tuple[Path, str 
     if isinstance(fixture, GitFixture):
         return workspace, _clone(fixture, workspace)
     if fixture is not None:
-        _copy_folder(fixture, workspace, exclude)
+        copy_folder(fixture, workspace, exclude)
     _git(["init", "--quiet"], workspace, "initialising the workspace")
     return workspace, None
 
@@ -58,23 +58,23 @@ def _clone(fixture: GitFixture, workspace: Path) -> str:
     return _git(["rev-parse", "HEAD"], workspace, f"reading the commit of {fixture.url}").strip()
 
 
-def _copy_folder(source: Path, workspace: Path, exclude: Path) -> None:
+def copy_folder(source: Path, destination: Path, exclude: Path) -> None:
     """Copy what git would see (tracked and untracked files, not ignored ones) when `source`
-    is in a git repo, otherwise everything; never the excluded folder, unless the fixture
-    lives inside it."""
+    is in a git repo, otherwise everything; never the excluded folder, unless `source` lives
+    inside it."""
     excluded: Path | None = exclude.resolve()
     if source.resolve().is_relative_to(excluded):
         excluded = None
     listed = _git_visible_files(source)
     if listed is None:
         ignore = None if excluded is None else _ignore_path(excluded)
-        shutil.copytree(source, workspace, dirs_exist_ok=True, ignore=ignore)
+        shutil.copytree(source, destination, dirs_exist_ok=True, ignore=ignore)
         return
     for relative in listed:
         file_path = source / relative
         is_excluded = excluded is not None and file_path.resolve().is_relative_to(excluded)
         if file_path.is_file() and not is_excluded:  # tracked files may be deleted locally
-            target = workspace / relative
+            target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(file_path, target)
 
@@ -122,3 +122,37 @@ def _git(args: list[str], cwd: Path, doing: str) -> str:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
         raise FixtureError(f"{doing} failed: {detail or f'git exited {completed.returncode}'}")
     return completed.stdout.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    exit_code: int
+    output: str  # stdout then stderr, trimmed to the last `output_tail_chars`
+
+    @property
+    def succeeded(self) -> bool:
+        return self.exit_code == 0
+
+
+def run_shell(
+    command: str, workspace: Path, timeout_s: float, output_tail_chars: int = 2000
+) -> CommandResult:
+    """Run a command through the platform shell (sh on macOS and Linux, cmd on Windows) in the
+    workspace. A command that can't start or runs past the timeout fails with exit code -1."""
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(-1, f"timed out after {timeout_s}s")
+    except OSError as error:
+        return CommandResult(-1, f"could not be run: {error}")
+    output = (completed.stdout + completed.stderr).strip()[-output_tail_chars:]
+    return CommandResult(completed.returncode, output)

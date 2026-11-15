@@ -24,7 +24,8 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Project:
     directory: Path  # the skillbench/ folder
-    defaults: dict[str, Any]  # skillbench.yaml, as written
+    defaults: dict[str, Any]  # skillbench.yaml's test defaults, as written
+    plugins: list[Path] = field(default_factory=list)  # `plugin:`, loaded into every test
 
     @property
     def repo_root(self) -> Path:
@@ -69,6 +70,8 @@ class TestSpec:
     min_pass_rate: float = 1.0
     # The skillbench folder: never copied into a workspace made from the repo around it.
     fixture_exclude: Path | None = None
+    # skillbench.yaml's `plugin:` folders, loaded into every run whatever the fixture is.
+    plugins: list[Path] = field(default_factory=list)
     # Plugins found in the workspace, set at run time so the agent loads all of them.
     plugin_dirs: list[Path] = field(default_factory=list)
 
@@ -85,10 +88,24 @@ def find_project(start: Path) -> Project | None:
         for candidate in (directory / PROJECT_DIR_NAME, directory):
             config_path = candidate / CONFIG_FILE_NAME
             if candidate.name == PROJECT_DIR_NAME and config_path.is_file():
-                defaults = _read_yaml_mapping(config_path, "defaults")
-                _validate_fields(config_path, defaults, _DEFAULT_RULES)
-                return Project(directory=candidate.resolve(), defaults=defaults)
+                return _load_project(candidate.resolve(), config_path)
     return None
+
+
+def _load_project(directory: Path, config_path: Path) -> Project:
+    defaults = _read_yaml_mapping(config_path, "defaults")
+    _validate_fields(config_path, defaults, _DEFAULT_RULES)
+    raw_plugins = defaults.pop("plugin", [])
+    if isinstance(raw_plugins, str):
+        raw_plugins = [raw_plugins]
+    plugins = [(directory.parent / raw).resolve() for raw in raw_plugins]
+    for plugin in plugins:
+        if not (plugin / ".claude-plugin" / "plugin.json").is_file():
+            raise ConfigError(
+                f"{config_path}: field 'plugin': {plugin} is not a plugin folder "
+                "(it has no .claude-plugin/plugin.json)"
+            )
+    return Project(directory=directory, defaults=defaults, plugins=plugins)
 
 
 def load_test(test_path: Path, project: Project, kind: str) -> TestSpec:
@@ -115,6 +132,7 @@ def load_test(test_path: Path, project: Project, kind: str) -> TestSpec:
         repeat=merged.get("repeat", 1),
         min_pass_rate=merged.get("min_pass_rate", 1.0),
         fixture_exclude=project.directory,
+        plugins=project.plugins,
     )
 
 
@@ -219,6 +237,11 @@ def _is_rate(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= 1
 
 
+def _is_path_or_paths(value: Any) -> bool:
+    paths = [value] if isinstance(value, str) else value
+    return isinstance(paths, list) and bool(paths) and all(map(_is_non_empty_string, paths))
+
+
 def _is_list(value: Any) -> bool:
     return isinstance(value, list)
 
@@ -255,7 +278,11 @@ _SHARED_RULES: dict[str, _Rule] = {
     "repeat": (_is_positive_int, "a positive integer"),
     "min_pass_rate": (_is_rate, "a number from 0 to 1"),
 }
-_DEFAULT_RULES: dict[str, _Rule] = {"model": (_is_string, "a string"), **_SHARED_RULES}
+_DEFAULT_RULES: dict[str, _Rule] = {
+    "plugin": (_is_path_or_paths, "a plugin folder, or a list of them"),
+    "model": (_is_string, "a string"),
+    **_SHARED_RULES,
+}
 _TEST_RULES: dict[str, _Rule] = {
     "name": (_is_string, "a string"),
     "skill": (_is_non_empty_string, "a skill name or a path to it"),

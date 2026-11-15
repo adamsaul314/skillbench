@@ -1,16 +1,17 @@
 """Built-in assertions: parsing a test's `assert:` list and checking it against a finished run."""
 
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from skillbench.claude import SKILL_TOOL, final_text, walk_tool_calls
+from skillbench.workspace import run_shell
 
 # How much of a failed command's output its reason quotes: enough to see the error, not a log.
 _COMMAND_OUTPUT_TAIL_CHARS = 2000
 _TOOL_ORDER_SHOWN_CALLS = 20
+_COMMAND_TIMEOUT_S = 1800
 
 
 class InvalidAssertionError(Exception):
@@ -44,6 +45,15 @@ class RunFacts:
             call["input"].get("skill") if isinstance(call["input"], dict) else None
             for call in walk_tool_calls(self.trace["items"])
             if call["name"] == SKILL_TOOL
+        ]
+
+    @property
+    def invoked_subagents(self) -> list[Any]:
+        """The agent type each subagent call asked for (`subagent_type`), in order."""
+        return [
+            call["input"]["subagent_type"]
+            for call in walk_tool_calls(self.trace["items"])
+            if isinstance(call["input"], dict) and "subagent_type" in call["input"]
         ]
 
     @property
@@ -124,8 +134,18 @@ def _check_skill_invoked(skill_name: str, facts: RunFacts) -> tuple[bool, str]:
     return False, f"{skill_name} was never invoked (skills invoked: {others})"
 
 
+def _check_subagent_invoked(agent_name: str, facts: RunFacts) -> tuple[bool, str]:
+    invoked = facts.invoked_subagents
+    count = sum(1 for name in invoked if _skill_name_matches(name, agent_name))
+    if count:
+        return True, f"the {agent_name} subagent ran {_times(count)}"
+    others = ", ".join(str(name) for name in invoked) or "none"
+    return False, f"the {agent_name} subagent never ran (subagents run: {others})"
+
+
 def _skill_name_matches(actual: Any, expected: str) -> bool:
-    """`planner` matches both `planner` and a plugin's `my-plugin:planner`."""
+    """`planner` matches both `planner` and a plugin's `my-plugin:planner` (skills and agents
+    alike)."""
     if not isinstance(actual, str):
         return False
     return actual == expected or (":" not in expected and actual.rsplit(":", 1)[-1] == expected)
@@ -179,21 +199,11 @@ def _check_final_text_contains(text: str, facts: RunFacts) -> tuple[bool, str]:
 
 
 def _check_command_succeeds(command: str, facts: RunFacts) -> tuple[bool, str]:
-    """Runs through the platform shell: sh on macOS and Linux, cmd on Windows."""
-    completed = subprocess.run(
-        command,
-        shell=True,
-        cwd=facts.workspace,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    reason = f"{command!r} exited with code {completed.returncode}"
-    if completed.returncode == 0:
+    result = run_shell(command, facts.workspace, _COMMAND_TIMEOUT_S, _COMMAND_OUTPUT_TAIL_CHARS)
+    reason = f"{command!r} exited with code {result.exit_code}"
+    if result.succeeded:
         return True, reason
-    output_tail = (completed.stdout + completed.stderr).strip()[-_COMMAND_OUTPUT_TAIL_CHARS:]
-    return False, f"{reason}; output: {output_tail!r}"
+    return False, f"{reason}; output: {result.output!r}"
 
 
 def _times(count: int) -> str:
@@ -238,6 +248,7 @@ def _is_file_contains_spec(value: Any) -> bool:
 _ASSERTION_TYPES: dict[str, tuple[Callable[[Any], bool], str, _Check]] = {
     "skill_invoked": (_is_non_empty_string, "a skill name", _check_skill_invoked),
     "skill_not_invoked": (_is_non_empty_string, "a skill name", _negated(_check_skill_invoked)),
+    "subagent_invoked": (_is_non_empty_string, "an agent name", _check_subagent_invoked),
     "tool_not_called": (_is_non_empty_string, "a tool name", _negated(_check_tool_called)),
     "tool_order": (_is_non_empty_string_list, "a non-empty list of tool names", _check_tool_order),
     "final_text_contains": (_is_non_empty_string, "a string", _check_final_text_contains),

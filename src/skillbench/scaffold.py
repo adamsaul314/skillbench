@@ -8,7 +8,8 @@ _CONFIG = """\
 # Defaults for every test in this folder. A test's own fields win over these,
 # and command-line flags (--model, --repeat) win over both.
 
-# model: claude-sonnet-5-5   # passed straight to claude
+# plugin: .                  # building a plugin? load it into every test, whatever the fixture
+# model: claude-haiku-5-5    # passed straight to claude (Haiku is the cheapest)
 timeout_s: 600               # seconds before one turn is stopped
 # repeat: 1                  # run every test N times (each run uses real quota)
 # min_pass_rate: 1.0         # with repeats: the share of runs that must pass

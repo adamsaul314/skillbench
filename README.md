@@ -100,6 +100,31 @@ assert:
 
 Nothing is forced here. Claude sees every skill in your repo and decides for itself, and the test checks what it chose.
 
+### Workflows with several steps
+
+Some workflows need you to do things between messages, like committing, or starting a fresh session before the next phase. Write those into `answers:` the same way you'd type them in Claude Code:
+
+| Answer | What skillbench does |
+|---|---|
+| `approved` | Sends it to Claude |
+| `/clear` | Starts a fresh session for the next message |
+| `!git add -A && git commit -m "plan"` | Runs the command in the repo itself, without Claude |
+
+```yaml
+prompt: /my-plugin:plan add CSV export. Use the slug csv-export.
+answers:
+  - Yes to all your recommendations.
+  - approved
+  - '!git add -A && git commit -m "plan: csv-export"'
+  - /clear
+  - /my-plugin:build csv-export
+assert:
+  - subagent_invoked: reviewer
+  - command_succeeds: python -m pytest -q
+```
+
+If a `!` command fails, the run stops there as an `error`, since the next steps would depend on it. The same works live: with `interactive: true` you can type `/clear` or `!command` at the prompt.
+
 ---
 
 ## 4. Checks you can make
@@ -110,6 +135,7 @@ Put any of these under `assert:`.
 |---|---|
 | `skill_invoked: grilling` | Claude used that skill |
 | `skill_not_invoked: grilling` | Claude didn't use that skill |
+| `subagent_invoked: reviewer` | Claude handed work to that subagent |
 | `tool_order: [Read, Edit]` | Claude used these tools in this order (other tools in between are fine) |
 | `tool_not_called: Write` | Claude never used that tool |
 | `final_text_contains: "Done"` | Claude's last message contains the text |
@@ -136,7 +162,33 @@ Paths are relative to your repo root. The copy is kept after the run so you can 
 
 ---
 
-## 6. Running tests
+## 6. Testing a plugin you're building
+
+If you're building a skill pack, workflow or agent setup packaged as a Claude Code plugin (it has `.claude-plugin/plugin.json`), you'll want to run it on *other* projects, not on itself. Add one line to `skillbench/skillbench.yaml`:
+
+```yaml
+plugin: .
+```
+
+Now your plugin (its skills and its subagents) is loaded into every test, whatever the `fixture:` is. For example, to run your whole workflow on a repo of your choice:
+
+`skillbench/agent/loop.yaml`
+
+```yaml
+prompt: /my-plugin:start add a dark mode toggle
+fixture: https://github.com/you/test-app.git
+interactive: true          # you answer its questions; copy them into `answers:` later
+```
+
+```
+skillbench agent loop --model claude-haiku-5-5
+```
+
+Each run gets its own copy of the plugin, so Claude can't change your real one, and the run keeps the exact version it tested.
+
+---
+
+## 7. Running tests
 
 ```
 skillbench skill                 # all skill tests
@@ -150,7 +202,7 @@ While it runs you'll see the current test, what Claude is doing, and roughly how
 
 ---
 
-## 7. More options
+## 8. More options
 
 You won't need these to start.
 
@@ -170,6 +222,7 @@ triggers:
 **Set defaults for every test** in `skillbench/skillbench.yaml`:
 
 ```yaml
+plugin: .             # load this repo's plugin into every test (see section 6)
 model: claude-sonnet-5-5
 timeout_s: 600        # seconds before a turn is stopped
 fixture: .
@@ -185,7 +238,7 @@ A test's own settings win over these, and command-line flags win over both.
 |---|---|
 | `skill` / `input` | Skill tests: which skill, and what to send it |
 | `prompt` | Agent tests: the first message |
-| `answers` | Replies sent one per turn |
+| `answers` | Replies sent one per turn; `/clear` and `!command` too (see "Workflows with several steps") |
 | `interactive` | Ask you in the terminal for replies |
 | `triggers` | Prompts that should / shouldn't pick the skill |
 | `fixture` | Which repo Claude works in |
