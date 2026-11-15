@@ -18,7 +18,7 @@ from skillbench import claude, skills
 from skillbench.assertions import Assertion, AssertionResult, RunFacts, evaluate_assertions
 from skillbench.claude import TurnInfo, UserMessage
 from skillbench.config import TestSpec
-from skillbench.progress import Progress, SilentProgress, describe_tool_call, format_seconds
+from skillbench.progress import Progress, SilentProgress
 from skillbench.workspace import FixtureError, copy_folder, create_workspace, run_shell
 
 _IS_WINDOWS = os.name == "nt"
@@ -38,7 +38,7 @@ class RunOptions:
     eval_id: str  # shared by every run of one invocation
     model_override: str | None = None
     ask_user: AskUser | None = None  # None when there is no terminal to ask live answers in
-    progress: Progress = field(default_factory=SilentProgress)  # shows the run as it goes
+    progress: Progress = field(default_factory=SilentProgress)  # told as each step starts
 
     def model_for(self, spec: TestSpec) -> str | None:
         return self.model_override or spec.model
@@ -201,9 +201,6 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
         turn_number = len(conversation.turns) + 1
         options.progress.step_started(message)
         outcome, info = launcher.run_turn(turn_number, message, conversation.session_to_resume)
-        options.progress.step_finished(
-            _turn_detail(outcome, info), outcome.run_status == "completed"
-        )
         conversation.add_turn(user_message, outcome, info)
         stop = _stop_before_next_turn(conversation, answers)
         if stop is not None:
@@ -219,15 +216,6 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
             return conversation
         if user_message is None:
             return conversation
-
-
-def _turn_detail(outcome: "_ProcessOutcome", info: TurnInfo) -> str:
-    """How long a turn took and what it cost, e.g. `38s · $0.04`."""
-    if outcome.timed_out:
-        return f"timed out after {format_seconds(outcome.duration_s)}"
-    detail = format_seconds(outcome.duration_s)
-    cost = info.trace["cost_usd"]
-    return detail if cost is None else f"{detail} · ${cost:.2f}"
 
 
 @dataclass(frozen=True)
@@ -257,7 +245,6 @@ class _BetweenTurns:
         self.progress.step_started(_CLEAR)
         self.conversation.starts_fresh = True
         self.conversation.pending_actions.append({"kind": "new_session"})
-        self.progress.step_finished("fresh session")
         return "(the next message starts a fresh session)"
 
     def _run(self, command: str) -> str:
@@ -266,7 +253,6 @@ class _BetweenTurns:
         self.conversation.pending_actions.append(
             {"kind": "user_command", "command": command, **vars(result)}
         )
-        self.progress.step_finished(f"exit {result.exit_code}", result.succeeded)
         if not result.succeeded:
             raise _CommandFailedError(
                 f"'!{command}' exited with code {result.exit_code}: {result.output}"
@@ -344,51 +330,33 @@ class _TurnLauncher:
             self._spec.plugin_dirs,
         )
         stdout_path = self._raw_dir / f"{turn_number}.jsonl"
-        watcher = _TurnWatcher(stdout_path, self._workspace, self._options.progress)
+        stop_at_skill_call = _SkillCallWatcher(stdout_path) if self._spec.trigger else None
         outcome = _run_process(
-            command, self._workspace, stdout_path, self._spec.timeout_s, self._stop_check(watcher)
+            command, self._workspace, stdout_path, self._spec.timeout_s, stop_at_skill_call
         )
         return outcome, claude.parse_stream(stdout_path.read_bytes())
 
-    def _stop_check(self, watcher: "_TurnWatcher") -> Callable[[], bool]:
-        """What to check while the turn runs: a trigger run stops at its first skill call;
-        otherwise the watcher only reports progress."""
-        return watcher.has_invoked_a_skill if self._spec.trigger is not None else watcher.report
 
+class _SkillCallWatcher:
+    """For a trigger run: re-reads the running turn's output whenever it grows, and says to stop
+    once any skill has been invoked (that's the decision being tested)."""
 
-class _TurnWatcher:
-    """Re-reads a running turn's output whenever it grows, to report each new tool call and to
-    see whether a skill has been invoked yet."""
-
-    def __init__(self, stdout_path: Path, workspace: Path, progress: Progress) -> None:
+    def __init__(self, stdout_path: Path) -> None:
         self._stdout_path = stdout_path
-        self._workspace = workspace
-        self._progress = progress
         self._seen_size = -1
-        self._tool_calls: list[dict[str, Any]] = []
 
-    def report(self) -> bool:
-        """Tell progress about new tool calls; never asks for the turn to stop."""
-        self._refresh()
-        return False
-
-    def has_invoked_a_skill(self) -> bool:
-        self._refresh()
-        return any(call["name"] == claude.SKILL_TOOL for call in self._tool_calls)
-
-    def _refresh(self) -> None:
+    def __call__(self) -> bool:
         try:
             size = self._stdout_path.stat().st_size
         except OSError:
-            return
+            return False
         if size == self._seen_size:
-            return
+            return False
         self._seen_size = size
         trace = claude.parse_stream(self._stdout_path.read_bytes()).trace
-        calls = list(claude.walk_tool_calls(trace["items"]))
-        for call in calls[len(self._tool_calls) :]:
-            self._progress.action(describe_tool_call(call, self._workspace))
-        self._tool_calls = calls
+        return any(
+            call["name"] == claude.SKILL_TOOL for call in claude.walk_tool_calls(trace["items"])
+        )
 
 
 # --- the run record ------------------------------------------------------------------------

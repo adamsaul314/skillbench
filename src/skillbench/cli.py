@@ -4,7 +4,6 @@ import argparse
 import importlib.resources
 import sys
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -12,22 +11,14 @@ from typing import Any
 
 from skillbench.claude import ClaudeNotFoundError, find_claude
 from skillbench.config import TEST_FOLDERS, ConfigError, Project, TestSpec, find_project, load_test
-from skillbench.dashboard import INDEX_FILE_NAME, format_duration, format_optional, write_dashboard
-from skillbench.progress import (
-    Eta,
-    Progress,
-    TestHeading,
-    format_check,
-    load_history,
-    make_progress,
-)
+from skillbench.dashboard import INDEX_FILE_NAME, write_dashboard
+from skillbench.progress import Progress, TestHeading, format_seconds, make_progress
 from skillbench.runner import AskUser, RunOptions, run_test
 from skillbench.scaffold import scaffold
 
 _EXIT_OK = 0
 _EXIT_RUN_FAILED = 1
 _EXIT_USAGE_ERROR = 2
-_SUMMARY_HEADER = ("test", "status", "duration", "turns")
 _ANSWER_PROMPT = "your answer (empty or /done to finish): "
 _NO_PROJECT = "no skillbench/ folder here or above; run `skillbench init` to create one"
 _TRIGGER_PROMPT_SHOWN_CHARS = 40
@@ -73,7 +64,8 @@ def _run_command(
         progress=progress,
     )
     variants = [variant for spec in specs for variant in _variants(spec, args.repeat)]
-    print(f"skillbench: {_describe_plan(variants)}")
+    model = args.model or specs[0].model or "default model"
+    print(f"skillbench: {_describe_plan(variants)}  ·  {model}\n")
     return _run_all(_repeats_of(variants), options, project.runs_dir, progress)
 
 
@@ -293,58 +285,42 @@ class _TestResult:
             return "error"
         return "fail"
 
-    def assertion_hits(self) -> list[tuple[str, int]]:
-        """Each assertion, labelled `type: expected`, and in how many runs it passed."""
-        hits: Counter[str] = Counter()
-        for record in self.records:
-            for result in record["assertions"]:
-                hits[format_check(result)] += 1 if result["passed"] else 0
-        return list(hits.items())
-
 
 def _run_all(
     runs: list[_PlannedRun], options: RunOptions, runs_root: Path, progress: Progress
 ) -> int:
-    eta = Eta(load_history(runs_root), [run.spec.name for run in runs])
+    name_width = max((len(_title(run)) for run in runs), default=0)
     results: dict[str, _TestResult] = {}
-    for index, run in enumerate(runs):
-        eta.start_run(index)
-        progress.test_started(_heading(run, options, index, len(runs)), eta)
+    for run in runs:
+        progress.test_started(TestHeading(_title(run), _planned_steps(run.spec), name_width))
         record = run_test(run.spec, runs_root, options, repeat_index=run.repeat_index)
-        eta.finish_run(record["duration_s"])
         write_dashboard(runs_root)
         progress.test_finished(record)
         result = results.setdefault(
             run.spec.name, _TestResult(run.spec.name, run.spec.min_pass_rate)
         )
         result.records.append(record)
-    print(_summary(list(results.values())))
-    print(f"dashboard: {_shown_path(runs_root / INDEX_FILE_NAME)}")
+    print()
+    for result in results.values():
+        if result.is_repeated:
+            print(_repeat_line(result))
+    print(_totals_line(list(results.values())))
+    print(f"details: {_shown_path(runs_root / INDEX_FILE_NAME)}")
     is_all_passed = all(result.status == "pass" for result in results.values())
     return _EXIT_OK if is_all_passed else _EXIT_RUN_FAILED
 
 
-def _heading(run: _PlannedRun, options: RunOptions, index: int, total: int) -> TestHeading:
-    spec = run.spec
-    return TestHeading(
-        index=index + 1,
-        total=total,
-        test_name=spec.name,
-        model=options.model_for(spec),
-        steps=[_first_message(spec), *([] if spec.trigger is not None else spec.answers)],
-        repeat_index=run.repeat_index,
-        repeat_count=spec.repeat,
-    )
+def _title(run: _PlannedRun) -> str:
+    if run.spec.repeat == 1:
+        return run.spec.name
+    return f"{run.spec.name} #{run.repeat_index}/{run.spec.repeat}"
 
 
-def _first_message(spec: TestSpec) -> str:
-    """The prompt as planned; a skill test's exact /command is only known once the skill is
-    found in the workspace, and replaces this when the step starts."""
+def _planned_steps(spec: TestSpec) -> int | None:
+    """The prompt plus every scripted answer; None when the user answers live."""
     if spec.trigger is not None:
-        return spec.trigger.prompt
-    if spec.skill is not None:
-        return f"/{spec.skill} {spec.skill_input}".strip()
-    return spec.prompt
+        return 1
+    return None if spec.is_interactive else 1 + len(spec.answers)
 
 
 def _terminal_asker(progress: Progress) -> AskUser:
@@ -363,39 +339,27 @@ def _terminal_asker(progress: Progress) -> AskUser:
     return ask
 
 
-def _summary(results: list[_TestResult]) -> str:
-    """The results table, then for repeated tests the pass rate and each check's hit count."""
-    table = [_SUMMARY_HEADER, *(_summary_row(result) for result in results)]
-    widths = [max(len(row[column]) for row in table) for column in range(len(_SUMMARY_HEADER))]
-    lines = [
-        "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
-        for row in table
-    ]
-    for result in results:
-        if result.is_repeated:
-            lines += _repeat_lines(result)
-    return "\n".join(lines)
-
-
-def _summary_row(result: _TestResult) -> tuple[str, ...]:
-    status = result.status
-    if result.is_repeated:
-        status = f"{status} {result.passes}/{len(result.records)}"
-    return (
-        result.test_name,
-        status,
-        format_duration(sum(record["duration_s"] for record in result.records)),
-        format_optional(result.records[-1]["trace"]["num_turns"]),
-    )
-
-
-def _repeat_lines(result: _TestResult) -> list[str]:
+def _repeat_line(result: _TestResult) -> str:
     runs = len(result.records)
-    header = (
-        f"\n{result.test_name}: {result.passes}/{runs} runs passed, "
-        f"needs {result.min_pass_rate:.0%} -> {result.status}"
+    verdict = "passed" if result.status == "pass" else "failed"
+    return (
+        f"{result.test_name}: {result.passes} of {runs} runs passed "
+        f"(needs {result.min_pass_rate:.0%}), so it {verdict}"
     )
-    return [header, *(f"  {label}  {hits}/{runs}" for label, hits in result.assertion_hits())]
+
+
+def _totals_line(results: list[_TestResult]) -> str:
+    """e.g. `1 passed, 2 failed  ·  1m 13s  ·  $0.10`."""
+    passed = sum(1 for result in results if result.status == "pass")
+    counts = [f"{passed} passed"] + (
+        [f"{len(results) - passed} failed"] if passed < len(results) else []
+    )
+    records = [record for result in results for record in result.records]
+    parts = [", ".join(counts), format_seconds(sum(record["duration_s"] for record in records))]
+    costs = [record["trace"]["cost_usd"] for record in records if record["trace"].get("cost_usd")]
+    if costs:
+        parts.append(f"${sum(costs):.2f}")
+    return "  ·  ".join(parts)
 
 
 def _shown_path(path: Path) -> str:

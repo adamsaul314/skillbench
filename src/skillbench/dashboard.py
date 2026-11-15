@@ -13,6 +13,9 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from skillbench.claude import final_text
+from skillbench.progress import why_not_passed
+
 INDEX_FILE_NAME = "index.html"
 _RUN_RECORD_FILE_NAME = "run.json"
 _EMPTY_STATE = (
@@ -392,12 +395,30 @@ def _render_readout(record: dict[str, Any]) -> str:
     cells = "".join(
         f"<div><dt>{escape(label)}</dt><dd>{escape(value)}</dd></div>" for label, value in readings
     )
-    error = record.get("error")
-    error_html = f'<p class="run-error">{escape(str(error))}</p>' if error else ""
     return (
         f'<dl class="meter"><div><dt>Status</dt><dd><span class="status status-{escape(status)}">'
-        f"{escape(status)}</span></dd></div>{cells}</dl>{error_html}{_render_location(record)}"
+        f"{escape(status)}</span></dd></div>{cells}</dl>"
+        f"{_render_why_not_passed(record)}{_render_location(record)}"
     )
+
+
+def _render_why_not_passed(record: dict[str, Any]) -> str:
+    """For a run that didn't pass, first thing: why, the full error, and what Claude said last."""
+    reason = why_not_passed(record)
+    if reason is None:
+        return ""
+    html = f'<p class="run-error"><strong>{escape(reason)}</strong>'
+    error = (record.get("error") or "").removeprefix(f"{record['test_file']}: ")
+    if "\n" in error:  # the reason only shows its first line
+        html += f"<br>{escape(error)}"
+    html += "</p>"
+    last_message = final_text(record["trace"]["items"])
+    if last_message:
+        html += (
+            "<h4>Claude's last message</h4>"
+            f'<div class="item"><div class="text">{escape(last_message)}</div></div>'
+        )
+    return html
 
 
 def _render_location(record: dict[str, Any]) -> str:

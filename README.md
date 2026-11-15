@@ -221,7 +221,18 @@ skillbench agent --repeat 5      # run each test 5 times
 skillbench agent --model claude-sonnet-5-5
 ```
 
-While a test runs you'll see its steps as a checklist (done, running, still to come), what Claude is doing right now in plain words ("Editing script.js", "Running node --test"), each step's time and cost, and roughly how long is left. When it finishes, any failed checks are shown right there, with the reason.
+The terminal keeps it short: one line per test, which step it's on while it runs, then whether it passed, how long it took and what it cost. If it didn't pass, one more line says why:
+
+```
+✓ hello-greets-by-name   passed      12s   $0.03
+✗ full-loop-damage       error       41s   $0.02
+    stopped at step 7: '!git commit -m "calc-damage: slice-1"' exited with code 1
+
+1 passed, 1 failed  ·  53s  ·  $0.05
+details: skillbench/runs/index.html
+```
+
+Everything else is in the dashboard: every message, tool call and check, and for a test that didn't pass, why and what Claude said last.
 
 ---
 
