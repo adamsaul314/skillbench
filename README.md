@@ -136,7 +136,33 @@ Paths are relative to your repo root. The copy is kept after the run so you can 
 
 ---
 
-## 6. Running tests
+## 6. Testing a plugin you're building
+
+If this repo **is** a Claude Code plugin (it has `.claude-plugin/plugin.json`), you'll want to run it on *other* projects, not on itself. Add one line to `skillbench/skillbench.yaml`:
+
+```yaml
+plugin: .
+```
+
+Now your plugin is loaded into every test, whatever the `fixture:` is. For example, to run your whole workflow on a repo of your choice:
+
+`skillbench/agent/loop.yaml`
+
+```yaml
+prompt: /my-plugin:start add a dark mode toggle
+fixture: https://github.com/you/test-app.git
+interactive: true          # you answer its questions; copy them into `answers:` later
+```
+
+```
+skillbench agent loop --model claude-haiku-5-5
+```
+
+Each run gets its own copy of the plugin, so Claude can't change your real one, and the run keeps the exact version it tested.
+
+---
+
+## 7. Running tests
 
 ```
 skillbench skill                 # all skill tests
@@ -150,7 +176,7 @@ While it runs you'll see the current test, what Claude is doing, and roughly how
 
 ---
 
-## 7. More options
+## 8. More options
 
 You won't need these to start.
 
@@ -170,6 +196,7 @@ triggers:
 **Set defaults for every test** in `skillbench/skillbench.yaml`:
 
 ```yaml
+plugin: .             # load this repo's plugin into every test (see section 6)
 model: claude-sonnet-5-5
 timeout_s: 600        # seconds before a turn is stopped
 fixture: .

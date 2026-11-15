@@ -44,7 +44,7 @@ def create_workspace(fixture: Fixture | None, exclude: Path) -> tuple[Path, str 
     if isinstance(fixture, GitFixture):
         return workspace, _clone(fixture, workspace)
     if fixture is not None:
-        _copy_folder(fixture, workspace, exclude)
+        copy_folder(fixture, workspace, exclude)
     _git(["init", "--quiet"], workspace, "initialising the workspace")
     return workspace, None
 
@@ -58,23 +58,23 @@ def _clone(fixture: GitFixture, workspace: Path) -> str:
     return _git(["rev-parse", "HEAD"], workspace, f"reading the commit of {fixture.url}").strip()
 
 
-def _copy_folder(source: Path, workspace: Path, exclude: Path) -> None:
+def copy_folder(source: Path, destination: Path, exclude: Path) -> None:
     """Copy what git would see (tracked and untracked files, not ignored ones) when `source`
-    is in a git repo, otherwise everything; never the excluded folder, unless the fixture
-    lives inside it."""
+    is in a git repo, otherwise everything; never the excluded folder, unless `source` lives
+    inside it."""
     excluded: Path | None = exclude.resolve()
     if source.resolve().is_relative_to(excluded):
         excluded = None
     listed = _git_visible_files(source)
     if listed is None:
         ignore = None if excluded is None else _ignore_path(excluded)
-        shutil.copytree(source, workspace, dirs_exist_ok=True, ignore=ignore)
+        shutil.copytree(source, destination, dirs_exist_ok=True, ignore=ignore)
         return
     for relative in listed:
         file_path = source / relative
         is_excluded = excluded is not None and file_path.resolve().is_relative_to(excluded)
         if file_path.is_file() and not is_excluded:  # tracked files may be deleted locally
-            target = workspace / relative
+            target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(file_path, target)
 

@@ -19,7 +19,7 @@ from skillbench.assertions import Assertion, AssertionResult, RunFacts, evaluate
 from skillbench.claude import TurnInfo, UserMessage
 from skillbench.config import TestSpec
 from skillbench.progress import Progress
-from skillbench.workspace import FixtureError, create_workspace
+from skillbench.workspace import FixtureError, copy_folder, create_workspace
 
 _IS_WINDOWS = os.name == "nt"
 _POLL_INTERVAL_S = 0.5
@@ -62,7 +62,7 @@ def run_test(
     workspace = None
     try:
         workspace, record["fixture_commit"] = create_workspace(spec.fixture, spec.fixture_exclude)
-        spec = _prepare_for_workspace(spec, workspace)
+        spec = _prepare_for_workspace(spec, workspace, run_dir / "plugins")
     except (FixtureError, skills.SkillNotFoundError) as error:
         record |= _setup_failed_record(spec, options, workspace, setup_started, error)
     else:
@@ -86,11 +86,11 @@ def _run_context(spec: TestSpec, repeat_index: int) -> dict[str, Any]:
     }
 
 
-def _prepare_for_workspace(spec: TestSpec, workspace: Path) -> TestSpec:
-    """Load every plugin and skill the repo has, and turn `skill:` into the prompt that runs
-    it (or, for a trigger run, the trigger prompt and the check that the skill did or didn't
-    fire). Raises SkillNotFoundError."""
-    found = skills.discover(workspace)
+def _prepare_for_workspace(spec: TestSpec, workspace: Path, snapshot_dir: Path) -> TestSpec:
+    """Load every plugin and skill the repo has, plus the `plugin:` folders, and turn `skill:`
+    into the prompt that runs it (or, for a trigger run, the trigger prompt and the check that
+    the skill did or didn't fire). Raises SkillNotFoundError."""
+    found = skills.discover(workspace, _snapshot_plugins(spec, snapshot_dir))
     skills.make_visible(workspace, found)
     spec = replace(spec, plugin_dirs=found.plugin_dirs)
     if spec.skill is None:
@@ -106,6 +106,18 @@ def _prepare_for_workspace(spec: TestSpec, workspace: Path) -> TestSpec:
         is_interactive=False,
         assertions=[Assertion(type=check, expected=target.name)],
     )
+
+
+def _snapshot_plugins(spec: TestSpec, snapshot_dir: Path) -> list[Path]:
+    """Copy each `plugin:` folder into the run, so the agent can't change the real one and the
+    run keeps the exact version it tested."""
+    snapshots = []
+    for plugin in spec.plugins:
+        snapshot = snapshot_dir / plugin.name
+        snapshot.mkdir(parents=True)
+        copy_folder(plugin, snapshot, spec.fixture_exclude)
+        snapshots.append(snapshot)
+    return snapshots
 
 
 # --- the conversation ----------------------------------------------------------------------

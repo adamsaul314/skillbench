@@ -45,10 +45,17 @@ class WorkspaceSkills:
     skills: list[FoundSkill]
 
 
-def discover(workspace: Path) -> WorkspaceSkills:
-    """Every plugin and skill in the repo: in plugins, .claude/skills/, .github/skills/ and
-    skills/."""
+def discover(workspace: Path, extra_plugin_dirs: list[Path]) -> WorkspaceSkills:
+    """Every plugin and skill in the repo (in plugins, .claude/skills/, .github/skills/ and
+    skills/), plus the extra plugins. An extra plugin whose name the repo already has is
+    skipped: the repo's own copy wins."""
     plugin_dirs = _find_plugins(workspace)
+    repo_plugin_names = {_plugin_name(plugin_dir) for plugin_dir in plugin_dirs}
+    plugin_dirs += [
+        plugin_dir
+        for plugin_dir in extra_plugin_dirs
+        if _plugin_name(plugin_dir) not in repo_plugin_names
+    ]
     skills = [
         FoundSkill(_skill_name(skill_dir), skill_dir, _plugin_name(plugin_dir))
         for plugin_dir in plugin_dirs
@@ -83,8 +90,7 @@ def resolve(workspace: Path, found: WorkspaceSkills, wanted: str) -> FoundSkill:
             f"skill '{wanted}' not found in the workspace (looked in {looked}; found: {known})"
         )
     candidates = "; ".join(
-        f"{skill.qualified_name} at {skill.directory.relative_to(workspace).as_posix()}"
-        for skill in matches
+        f"{skill.qualified_name} at {_shown_path(skill.directory, workspace)}" for skill in matches
     )
     raise SkillNotFoundError(
         f"skill '{wanted}' matches more than one skill ({candidates}); "
@@ -166,3 +172,11 @@ def _git_exclude(workspace: Path, pattern: str) -> None:
         return
     with exclude_file.open("a", encoding="utf-8") as handle:
         handle.write(f"/{pattern}/\n")
+
+
+def _shown_path(path: Path, workspace: Path) -> str:
+    """Relative to the workspace when inside it (a plugin loaded from outside is not)."""
+    try:
+        return path.relative_to(workspace).as_posix()
+    except ValueError:
+        return path.as_posix()
