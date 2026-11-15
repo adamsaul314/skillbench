@@ -84,7 +84,7 @@ undo_bump() {
 }
 
 check_code() {
-    uv run -q ruff check .
+    uv run -q ruff check -q .
     uv run -q ruff format --check .
     step "ruff is clean"
 }
@@ -101,7 +101,7 @@ test_install() {
     uv venv -q "$scratch/venv"
     local bin="$scratch/venv/bin"
     [[ -d "$bin" ]] || bin="$scratch/venv/Scripts"  # Windows
-    uv pip install -q --python "$bin/python" dist/*.whl
+    uv pip install -q --python "$scratch/venv" dist/*.whl
     mkdir "$scratch/project"
     (cd "$scratch/project" && "$bin/$COMMAND" --help >/dev/null && "$bin/$COMMAND" init >/dev/null)
     [[ -f "$scratch/project/skillbench/skillbench.yaml" ]] || fail "installed $COMMAND init did nothing"
