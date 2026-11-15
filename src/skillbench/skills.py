@@ -33,10 +33,10 @@ class FoundSkill:
     def qualified_name(self) -> str:
         return f"{self.plugin_name}:{self.name}" if self.plugin_name else self.name
 
-    def invocation(self, backend_name: str) -> str:
-        """The /command that runs this skill: Claude prefixes a plugin's skills with the plugin
-        name, Copilot uses the bare skill name."""
-        return f"/{self.qualified_name if backend_name == 'claude' else self.name}"
+    @property
+    def invocation(self) -> str:
+        """The /command that runs this skill; a plugin's skills are prefixed with its name."""
+        return f"/{self.qualified_name}"
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,8 @@ class WorkspaceSkills:
 
 
 def discover(workspace: Path) -> WorkspaceSkills:
-    """Every plugin and skill in the repo, in the places Claude Code and Copilot look."""
+    """Every plugin and skill in the repo: in plugins, .claude/skills/, .github/skills/ and
+    skills/."""
     plugin_dirs = _find_plugins(workspace)
     skills = [
         FoundSkill(_skill_name(skill_dir), skill_dir, _plugin_name(plugin_dir))
@@ -91,17 +92,15 @@ def resolve(workspace: Path, found: WorkspaceSkills, wanted: str) -> FoundSkill:
     )
 
 
-def make_visible(workspace: Path, found: WorkspaceSkills, backend_name: str) -> None:
-    """Copy skills the CLI wouldn't find by itself into .claude/skills/, which both CLIs read.
-    Plugins are passed by flag instead. Copies are git-excluded so the agent sees a clean tree."""
+def make_visible(workspace: Path, found: WorkspaceSkills) -> None:
+    """Copy skills Claude wouldn't find by itself into .claude/skills/. Plugins are passed by
+    flag instead. Copies are git-excluded so the agent sees a clean tree."""
     for skill in found.skills:
         if skill.plugin_name is not None:
             continue
         relative = skill.directory.relative_to(workspace)
         if relative.parent == _CLAUDE_SKILLS:
             continue
-        if relative.parent == _GITHUB_SKILLS and backend_name == "copilot":
-            continue  # Copilot reads .github/skills/ itself
         target = workspace / _CLAUDE_SKILLS / skill.directory.name
         if target.exists():
             continue

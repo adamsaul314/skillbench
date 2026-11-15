@@ -2,14 +2,13 @@
 
 from pathlib import Path
 
-from skillbench.project import CONFIG_FILE_NAME, PROJECT_DIR_NAME
+from skillbench.config import CONFIG_FILE_NAME, PROJECT_DIR_NAME
 
 _CONFIG = """\
 # Defaults for every test in this folder. A test's own fields win over these,
-# and command-line flags (--claude, --copilot, --model, --repeat) win over both.
+# and command-line flags (--model, --repeat) win over both.
 
-# backend: claude            # claude, copilot, or [claude, copilot]
-# model: claude-sonnet-5-5   # passed straight to the agent CLI
+# model: claude-sonnet-5-5   # passed straight to claude
 timeout_s: 600               # seconds before one turn is stopped
 # repeat: 1                  # run every test N times (each run uses real quota)
 # min_pass_rate: 1.0         # with repeats: the share of runs that must pass
@@ -18,7 +17,6 @@ timeout_s: 600               # seconds before one turn is stopped
 
 _GITIGNORE = """\
 runs/
-.cache/
 """
 
 _SKILL_TEST = """\
@@ -26,8 +24,7 @@ _SKILL_TEST = """\
 # Run it with:  skillbench skill
 #
 #   skill:    the skill's name, or its path in the repo. skillbench looks in .claude/skills/,
-#             skills/, .github/skills/ and any plugin, and builds the right /command for
-#             Claude Code or Copilot.
+#             skills/, .github/skills/ and any plugin, and builds the /command.
 #   input:    the text after the /command.
 #   fixture:  the repo the agent works in, copied to a temp folder first so nothing real is
 #             touched. "." is this repo, a path is a folder in it, a git URL is cloned:
@@ -60,12 +57,11 @@ name: hello-loop
 prompt: Please greet the platform team for me.
 fixture: skillbench/fixtures/sample-repo
 answers: []
-max_turns: 3
 assert:
   - skill_invoked: hello
   - skill_not_invoked: deploy
+  - tool_order: [Skill]
   - final_text_contains: Hello
-  - exit_ok: true
 """
 
 _SAMPLE_REPO_README = """\

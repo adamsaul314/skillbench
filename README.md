@@ -2,15 +2,15 @@
 
 Test your agent skills, and whole agent loops, the way you test code.
 
-skillbench runs real agent CLIs (**Claude Code** or **GitHub Copilot CLI**) headless against a copy of your repo. It records every turn, tool call and skill the agent used, and checks what happened against the assertions you wrote.
+skillbench runs **Claude Code** headless against a copy of your repo. It records every turn, tool call and skill the agent used, and checks what happened against the assertions you wrote.
 
 ```
 $ skillbench init
 $ skillbench skill
 skillbench: 2 tests = 2 runs
-test                      backend  status  duration  turns
-hello-greets-by-name      claude   pass    8.2s      2
-hello [should] say hi...  claude   pass    3.1s      1
+test                      status  duration  turns
+hello-greets-by-name      pass    8.2s      2
+hello [should] say hi...  pass    3.1s      1
 dashboard: skillbench/runs/index.html
 ```
 
@@ -18,7 +18,7 @@ dashboard: skillbench/runs/index.html
 
 ## Install
 
-You need **Python 3.11+**, **git**, **[uv](https://docs.astral.sh/uv/)**, and at least one agent CLI that is installed and logged in (`claude --version` or `copilot --version`). It works on macOS, Linux and Windows.
+You need **Python 3.11+**, **git**, **[uv](https://docs.astral.sh/uv/)**, and Claude Code installed and logged in (`claude --version`). It works on macOS, Linux and Windows.
 
 ```
 uv tool install /path/to/skillbench
@@ -35,7 +35,7 @@ skillbench skill       # runs skillbench/skills/*.yaml
 skillbench agent       # runs skillbench/agent/*.yaml
 ```
 
-The samples run as they are, against `skillbench/fixtures/sample-repo`. Change `fixture: .` to test against your own repo instead.
+The samples run as they are, against `skillbench/fixtures/sample-repo`. Change `fixture:` to `.` to test against your own repo instead.
 
 Everything skillbench creates lives in one folder, so your repo stays clean:
 
@@ -46,7 +46,6 @@ skillbench/
   agent/               agent loop tests
   fixtures/            sample repos (optional)
   runs/                results and the dashboard (git-ignored)
-  .cache/              cloned fixture repos (git-ignored)
 ```
 
 Commands find `skillbench/` from any folder inside your repo, the way git finds `.git`.
@@ -70,7 +69,7 @@ assert:
   - tool_not_called: Write
 ```
 
-You never write the `/command` yourself. skillbench finds the skill in the repo, looking in `.claude/skills/`, `skills/`, `.github/skills/` and any plugin (a folder with `.claude-plugin/plugin.json`). It then builds the right command for each agent: `/my-plugin:grilling` on Claude Code and `/grilling` on Copilot. One test works on both.
+You never write the `/command` yourself. skillbench finds the skill in the repo, looking in `.claude/skills/`, `skills/`, `.github/skills/` and any plugin (a folder with `.claude-plugin/plugin.json`), and builds the command, e.g. `/my-plugin:grilling` for a plugin's skill.
 
 If two skills share a name, skillbench lists them. In that case write `plugin:skill` or the skill's path (`skill: plugins/mine/skills/grilling`).
 
@@ -101,7 +100,6 @@ fixture: .
 answers:                                  # replies sent one per turn when the agent asks
   - Yes to all your recommendations, including any further questions.
   - approved
-max_turns: 8
 timeout_s: 1800
 assert:
   - skill_invoked: planner
@@ -117,7 +115,7 @@ Tips:
 
 ### Answering live
 
-Set `interactive: true` to type replies yourself once the scripted ones run out. An empty reply or `/done` ends the conversation, and skillbench then offers to save your answers into the YAML.
+Set `interactive: true` to answer the agent yourself, as in a real session. Once the scripted answers run out, skillbench shows the agent's last message and you type the reply. An empty reply or `/done` ends the conversation.
 
 ---
 
@@ -135,37 +133,21 @@ Each run gets a fresh temp folder that holds the fixture, so your real files are
 
 Paths are relative to the repo root (the folder that holds `skillbench/`).
 
-Clones go through a cache in `skillbench/.cache/`, which is fetched once per invocation, so a suite doesn't clone the same repo over and over. The exact commit each run used is recorded and shown in the dashboard. Pin a `ref` when you want results that don't move with `main`. Private repos use the git credentials you already have.
-
-If a clone fails, that test is reported as `error` and the rest of the suite carries on.
+The exact commit each run used is recorded and shown in the dashboard. Pin a `ref` when you want results that don't move with `main`. Private repos use the git credentials you already have. If a clone fails, that test is reported as `error` and the rest of the suite carries on.
 
 > **Heads-up:** the agent has full tool access inside the workspace, and `command_succeeds` runs commands there. Only use fixture repos you trust.
-
-## Choosing the agent and model
-
-```
-skillbench skill --claude
-skillbench skill --copilot
-skillbench skill --claude --copilot        # each test on both
-skillbench agent --claude --model claude-sonnet-5-5
-```
-
-- With no flag, skillbench uses `backend:` from `skillbench.yaml`, or else whichever CLI is installed. If both are installed it picks Claude and says so.
-- `--model` is passed to the CLI as given. It needs a single backend, because model names differ between the two.
-- A test can opt out of a backend with `backends: [claude]`.
 
 ## Running tests
 
 ```
-skillbench skill                 # every skill test
-skillbench skill grilling        # tests named grilling, in grilling.yaml, or testing skill grilling
+skillbench skill                    # every skill test
+skillbench skill grilling           # tests named grilling, in grilling.yaml, or testing skill grilling
 skillbench agent csv-export
-skillbench agent path/to/t.yaml  # or a folder
-skillbench run some/dir          # any other test files or folder
-skillbench dashboard             # rebuild the dashboard only
+skillbench agent path/to/t.yaml     # or a folder
+skillbench agent --model claude-sonnet-5-5
 ```
 
-The exit code is `0` only if every test passed.
+`--model` is passed to `claude` as given. The exit code is `0` only if every test passed. The dashboard is rewritten after every run.
 
 While tests run, the terminal shows the current test, turn, latest tool call, elapsed time, and an overall bar with an estimated finish time. The estimate comes from the last recorded run of the same test, or else from the tests finished so far. When there's nothing to base it on yet, only elapsed time is shown. When output isn't a terminal (CI, pipes), you get one plain line per run instead.
 
@@ -180,7 +162,7 @@ skillbench skill --repeat 5
 ```
 skillbench: 3 tests × 5 repeats = 15 runs
 ...
-grilling-asks-questions (claude): 4/5 runs passed, needs 100% -> fail
+grilling-asks-questions: 4/5 runs passed, needs 100% -> fail
   skill_invoked: grilling  5/5
   final_text_contains: Q1  4/5
 ```
@@ -213,13 +195,9 @@ Open `skillbench/runs/index.html` in a browser. It needs no server and no networ
 | `fixture` | The repo the agent works in (see Fixtures) | `skillbench.yaml`, else empty |
 | `answers` | Scripted replies, one per turn | `[]` |
 | `interactive` | Ask in the terminal once scripted answers run out | `false` |
-| `max_turns` | Most conversation turns allowed | no limit |
 | `timeout_s` | Seconds before a turn is stopped | `600` |
-| `model` | Model to use | the agent's default |
-| `backends` | Limit to `[claude]`, `[copilot]` or both | both |
 | `repeat` | Runs per invocation | `1` |
 | `min_pass_rate` | With repeats: the share of runs that must pass | `1.0` |
-| `allowed_tools` / `denied_tools` | Tool allow and deny lists | `[]` |
 | `assert` | List of checks | `[]` |
 
 A test has either `skill` or `prompt`. Precedence is CLI flag, then the test, then `skillbench.yaml`, then the built-in default.
@@ -230,22 +208,17 @@ A test has either `skill` or `prompt`. Precedence is CLI flag, then the test, th
 |---|---|
 | `skill_invoked: grilling` | The skill ran, through the Skill tool or a `/skill` message. `grilling` also matches `my-plugin:grilling`. |
 | `skill_not_invoked: grilling` | The skill never ran |
-| `tool_called: Bash` | The tool was called at least once (subagents included) |
-| `tool_not_called: Write` | The tool was never called |
-| `tool_order: [Read, Edit, Bash]` | Those tools were called in that order, with anything in between |
-| `file_exists: docs/plan.md` | The file exists in the workspace afterwards |
-| `file_contains: {path: docs/plan.md, text: "approved"}` | The file contains the text |
+| `tool_not_called: Write` | The tool was never called (subagents included) |
+| `tool_order: [Read, Edit, Bash]` | Those tools were called in that order, with anything in between. `[Bash]` checks a tool was called at all. |
 | `final_text_contains: "Q1"` | The agent's last message contains the text |
-| `max_turns: 5` | The conversation took 5 turns or fewer |
-| `exit_ok: true` | The agent CLI exited cleanly and didn't time out |
+| `file_contains: {path: docs/plan.md, text: "approved"}` | The file exists in the workspace and contains the text |
 | `command_succeeds: python -m pytest -q` | The command exits 0 in the workspace |
 
-`command_succeeds` runs a plain command directly, the same way on every OS, using the program found on your PATH. A command with shell syntax (`&&`, `|`, `>`, `$VAR`) goes to the platform shell instead: `sh` on macOS and Linux, `cmd` on Windows. For portable tests, stick to plain commands. Typos in assertions are caught before anything runs.
+`command_succeeds` runs through the platform shell: `sh` on macOS and Linux, `cmd` on Windows. For portable tests, use commands that work in both. Typos in assertions are caught before anything runs.
 
 ### skillbench.yaml
 
 ```yaml
-backend: claude          # claude, copilot, or [claude, copilot]
 model: claude-sonnet-5-5
 timeout_s: 600
 repeat: 1
@@ -253,20 +226,18 @@ min_pass_rate: 1.0
 fixture: .
 ```
 
-### How skillbench runs each agent
+### How skillbench runs Claude Code
 
-- **Isolation:** every run ignores your personal agent config, so a global skill can't make a test pass or fail. Only the skills and plugins in the workspace repo are loaded.
-- **Claude Code** runs as `claude -p ... --output-format stream-json`. Plugins are passed with `--plugin-dir`. With `ANTHROPIC_API_KEY` set it uses `--bare`; otherwise it keeps your login but drops personal settings and MCP servers. Cost is shown in USD.
-- **Copilot CLI** runs as `copilot -p ... --allow-all --no-ask-user --no-custom-instructions`. The dashboard shows premium requests. Copilot can only be capped by `timeout_s`. Its support was built from the documented event format and hasn't been checked against a real run yet. If a trace looks wrong, the raw output is in `skillbench/runs/<id>/raw/`.
+- Each turn runs `claude -p ... --output-format stream-json`, and later turns resume the same session. Every plugin found in the workspace is passed with `--plugin-dir`.
+- **Isolation:** every run ignores your personal config, so a global skill can't make a test pass or fail. With `ANTHROPIC_API_KEY` set it uses `--bare`; otherwise it keeps your login but drops personal settings and MCP servers.
+- The agent can't stop to ask questions mid-turn (`AskUserQuestion` is disabled); skillbench answers between turns instead.
+- Raw output for every turn is in `skillbench/runs/<id>/raw/`.
 
 ---
 
 ## Developing skillbench
 
 ```
-uv run pytest            # its own tests use fake claude/copilot scripts, so they're free
 uv run ruff check .
 uv run ruff format .
 ```
-
-CI runs the suite on Ubuntu, macOS and Windows.

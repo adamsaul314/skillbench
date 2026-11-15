@@ -1,4 +1,0 @@
-{"type":"session.start","id":"ev-1","timestamp":"2026-11-14T10:01:00.000Z","data":{"sessionId":"cop-sess-1","selectedModel":"gpt-5"}}
-{"type":"assistant.message","id":"ev-2","timestamp":"2026-11-14T10:01:01.000Z","data":{"messageId":"m5","content":"Thanks, noted."}}
-{"type":"assistant.usage","id":"ev-3","timestamp":"2026-11-14T10:01:01.100Z","data":{"model":"gpt-5","inputTokens":40,"outputTokens":5}}
-{"type":"session.shutdown","id":"ev-4","timestamp":"2026-11-14T10:01:01.200Z","data":{"totalPremiumRequests":1}}

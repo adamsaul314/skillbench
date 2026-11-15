@@ -1,2 +1,0 @@
-{"type":"system","subtype":"init","cwd":"/ws","session_id":"sess-hang-1","tools":["Bash"],"mcp_servers":[],"model":"claude-sonnet-5-5","plugins":[],"skills":[]}
-{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Starting a long task."}],"usage":{"input_tokens":1,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"sess-hang-1"}
