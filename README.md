@@ -2,301 +2,313 @@
 
 Test your Claude Code skills and agent workflows, the way you test code.
 
-You write a small YAML file that says *"send this to Claude, then check these things"*. skillbench runs Claude Code for real on a copy of your repo, records everything it did, and tells you **pass** or **fail**.
+You write a short YAML file: *"send Claude this, then check these things"*. skillbench runs Claude Code for real on a **copy** of a repo, records everything it did, and tells you **pass** or **fail**.
+
+**Jump to:** [Get started](#get-started) · [Write a test](#write-a-test) · [Run tests](#run-tests) · [Reference](#reference)
 
 ---
 
-## 1. Install
+## Get started
 
-You need Python 3.11+, git, and Claude Code installed and logged in (check with `claude --version`).
+You need Python 3.11+, git, and Claude Code installed and logged in (`claude --version` should work).
 
-Install from [PyPI](https://pypi.org/project/skillbench-cli/) with **one** of these, whichever you normally use:
+**1. Install it.** Use whichever tool you normally use:
 
-| Tool | Command |
+```
+pip install skillbench-cli
+pipx install skillbench-cli
+uv tool install skillbench-cli
+```
+
+The package is `skillbench-cli`; the command is `skillbench`.
+
+**2. Set up your repo.** In the repo you want to test:
+
+```
+skillbench init
+```
+
+This creates one folder, `skillbench/`, with two example tests:
+
+```
+skillbench/
+  skillbench.yaml     settings for every test
+  skills/             skill tests
+  agent/              agent tests
+  fixtures/           small sample repos for tests to run on
+  runs/               results (git-ignored)
+```
+
+**3. Run the examples.**
+
+```
+skillbench skill
+skillbench agent
+```
+
+**4. Look at the results.** Open `skillbench/runs/index.html` in your browser. Each run shows what it tested, its steps, why it didn't pass (if it didn't), and everything Claude did.
+
+Now write your own tests: next section.
+
+---
+
+## Write a test
+
+Find what you want to check in this list, then follow that recipe.
+
+| I want to check that… | Recipe |
 |---|---|
-| pip | `pip install skillbench-cli` |
-| pipx | `pipx install skillbench-cli` |
-| uv | `uv tool install skillbench-cli` |
+| my skill does the right thing when it runs | [A. Test a skill](#a-test-a-skill) |
+| Claude picks my skill when it should, and not when it shouldn't | [B. Test a skill gets picked](#b-test-a-skill-gets-picked) |
+| a normal request gets done, with the right skills | [C. Test a request end to end](#c-test-a-request-end-to-end) |
+| my multi-step workflow works on a real repo | [D. Test a workflow on a repo](#d-test-a-workflow-on-a-repo) |
+| the plugin I'm building works on other projects | [E. Test a plugin you're building](#e-test-a-plugin-youre-building) |
 
-The package is called `skillbench-cli`, but the command is `skillbench`. Check it worked:
-
-```
-$ skillbench --help
-usage: skillbench [-h] {init,skill,agent} ...
-
-    init              create the skillbench/ folder with sample tests
-    skill             run tests in skillbench/skills/
-    agent             run tests in skillbench/agent/
-```
-
-To upgrade later, run the same tool with its upgrade option, e.g. `pip install -U skillbench-cli`.
-
-## 2. Try it (2 minutes)
-
-In your repo:
-
-```
-skillbench init      # creates a skillbench/ folder with two example tests
-skillbench skill     # runs the skill test
-skillbench agent     # runs the agent test
-```
-
-You'll see something like:
-
-```
-[1/1] hello-greets-by-name  default model
-hello-greets-by-name: pass in 2.3s
-dashboard: skillbench/runs/index.html
-```
-
-Open `skillbench/runs/index.html` in your browser. Each run opens with what it tests (your skill, or your plugin and its version), the test's steps, and, if it didn't pass, why. Below that is exactly what Claude did: every message, tool call and check.
-
-That's it. The rest of this page shows how to write your own tests, or you can let Claude write them.
-
-### Let Claude write your tests
-
-skillbench comes with a Claude Code skill that writes test files for you. Install it once:
+**Or let Claude write it.** Install the `/eval-creator` skill once:
 
 ```
 skillbench install-skill
 ```
 
-Then, in Claude Code in your repo, say what you want to test:
+Then in Claude Code, in your repo, say what you want to test:
 
 ```
 /eval-creator test that my grilling skill asks questions before writing anything
-/eval-creator a full loop test of my workflow on https://github.com/me/test-app
 ```
 
-It reads your skills, asks anything it can't work out, writes the files into `skillbench/`, and checks them. It never runs them, so you decide when to spend tokens. Run `skillbench install-skill` again after upgrading skillbench to keep it in step.
+It reads your skills, asks what it can't work out, writes the test files and checks them. It never runs them, so you decide when to spend tokens. Run `skillbench install-skill` again after you upgrade skillbench.
 
-To check test files yourself, for free, without running anything:
+Whichever way you write tests, check them for free before running:
 
 ```
 skillbench check
 ```
 
----
+### A. Test a skill
 
-## 3. Two kinds of test
+Runs your skill directly (`/grilling an idea for a todo app`) and checks what it did.
 
-| | **Skill test** | **Agent test** |
-|---|---|---|
-| Question it answers | "When my skill runs, does it do the right thing?" | "Given a normal request, does Claude pick the right skills and get the job done?" |
-| Lives in | `skillbench/skills/` | `skillbench/agent/` |
-| Run with | `skillbench skill` | `skillbench agent` |
-| You write | `skill:` and `input:` | `prompt:` |
-
-### A skill test
-
-`skillbench/skills/grilling.yaml`
+Create `skillbench/skills/grilling.yaml`:
 
 ```yaml
 description: Grilling asks questions before it writes anything.
-skill: grilling                 # your skill's name
-input: an idea for a todo app   # what to send it
-fixture: .                      # run it on a copy of this repo
+skill: grilling                 # the skill's name
+input: an idea for a todo app   # the text after /grilling
+fixture: .                      # run on a copy of this repo
 
 assert:
-  - final_text_contains: "Q1"
+  - final_text_contains: "?"
   - tool_not_called: Write
 ```
 
-skillbench finds the skill wherever it lives in your repo (`.claude/skills/`, `skills/`, `.github/skills/` or a plugin) and runs it as `/grilling an idea for a todo app`.
+Run it: `skillbench skill grilling`
 
-### An agent test
+skillbench finds the skill wherever it is: `.claude/skills/`, `skills/`, `.github/skills/`, or inside a plugin.
 
-`skillbench/agent/csv-export.yaml`
+### B. Test a skill gets picked
+
+Checks your skill's description is good enough for Claude to choose it on its own. Each prompt is a short run that stops as soon as Claude decides, so these are cheap.
+
+Add `triggers:` to a skill test:
 
 ```yaml
+skill: grilling
+triggers:
+  should: ["stress-test my plan before I build it"]
+  should_not: ["fix the typo in README.md"]
+```
+
+Run it: `skillbench skill grilling`
+
+### C. Test a request end to end
+
+Sends a normal message, with nothing forced. Claude sees every skill in the repo and decides for itself; the test checks what it chose and whether the job got done.
+
+Create `skillbench/agent/csv-export.yaml`:
+
+```yaml
+description: Adding CSV export uses the planner and leaves the tests passing.
 prompt: add CSV export to the report page
 fixture: .
 
-answers:                       # replies, sent one at a time when Claude asks something
+answers:                        # sent one at a time, each time Claude stops and waits
   - Yes to all your recommendations.
   - approved
 
 assert:
   - skill_invoked: planner
-  - tool_order: [Read, Edit, Bash]
   - command_succeeds: python -m pytest -q
 ```
 
-Nothing is forced here. Claude sees every skill in your repo and decides for itself, and the test checks what it chose.
+Run it: `skillbench agent csv-export`
 
-### Workflows with several steps
+Not sure what Claude will ask? Leave out `answers:` and add `interactive: true`. skillbench then asks *you* in the terminal each time Claude waits for a reply (press Enter on an empty line to stop). Copy your replies into `answers:` afterwards.
 
-Some workflows need you to do things between messages, like committing, or starting a fresh session before the next phase. Write those into `answers:` the same way you'd type them in Claude Code:
+### D. Test a workflow on a repo
 
-| Answer | What skillbench does |
+For workflows with several phases, where in Claude Code you'd type things between messages: commit, `/clear`, start the next skill. Put those in `answers:` exactly as you'd type them:
+
+| In `answers:` | What happens |
 |---|---|
-| `approved` | Sends it to Claude |
-| `/clear` | Starts a fresh session for the next message |
-| `!git add -A && git commit -m "plan"` | Runs the command in the repo itself, without Claude |
+| `approved` | Sent to Claude as a message |
+| `/clear` | The next message starts a fresh session |
+| `!git add -A && git commit -m "plan"` | Runs in the repo as a shell command, not sent to Claude |
+
+Point `fixture:` at the repo to run on. A git URL is cloned fresh for each run, and pushing from the clone is turned off.
+
+Create `skillbench/agent/full-loop.yaml`:
 
 ```yaml
-prompt: /my-plugin:plan add CSV export. Use the slug csv-export.
+description: The plan, build and review loop adds a dark mode toggle to test-app.
+prompt: /my-plugin:plan add a dark mode toggle. Use the slug dark-mode.
+fixture: https://github.com/you/test-app.git
+
 answers:
   - Yes to all your recommendations.
   - approved
-  - '!git add -A && git commit -m "plan: csv-export"'
+  - '!git add -A && git commit -m "plan: dark-mode"'
   - /clear
-  - /my-plugin:build csv-export
+  - /my-plugin:build dark-mode
+  - '!git add -A && git commit -m "dark-mode: build"'
+  - /clear
+  - /my-plugin:final-review dark-mode
+
 assert:
   - subagent_invoked: reviewer
-  - command_succeeds: python -m pytest -q
+  - file_contains: {path: docs/features/dark-mode/plan.md, text: "approved"}
+  - command_succeeds: npm test
 ```
 
-If a `!` command fails, the run stops there as an `error`, since the next steps would depend on it. The same works live: with `interactive: true` you can type `/clear` or `!command` at the prompt.
+Run it on a cheap model first: `skillbench agent full-loop --model claude-haiku-5-5`
+
+If a `!` command fails, the run stops there with `error`, since later steps depend on it.
+
+### E. Test a plugin you're building
+
+If your repo **is** a Claude Code plugin (it has `.claude-plugin/plugin.json`), add this line to `skillbench/skillbench.yaml`:
+
+```yaml
+plugin: .
+```
+
+Now your plugin's skills and subagents are loaded into every test, whatever repo the test runs on. Combine it with recipe D to run your workflow on any project. Each run gets its own copy of the plugin, so the dashboard shows exactly which version was tested. `skillbench check` warns you if you forget this line.
 
 ---
 
-## 4. Checks you can make
+## Run tests
 
-Put any of these under `assert:`.
+```
+skillbench skill                 # every skill test
+skillbench agent                 # every agent test
+skillbench agent full-loop       # one test, by name (or every test for one skill)
+skillbench agent --model claude-haiku-5-5
+skillbench agent --repeat 5      # run each test 5 times
+```
+
+The terminal shows one line per test:
+
+```
+✓ hello-greets-by-name   passed      12s   $0.03
+✗ full-loop              error       41s   $0.02
+    stopped at step 7: '!git commit -m "dark-mode: build"' exited with code 1
+
+1 passed, 1 failed  ·  53s  ·  $0.05
+details: skillbench/runs/index.html
+```
+
+| Result | Meaning |
+|---|---|
+| `pass` | Every check passed |
+| `fail` | Claude finished, but a check failed |
+| `error` | The run stopped: Claude crashed or timed out, a `!` command failed, or the skill or repo couldn't be found |
+
+For the details, open `skillbench/runs/index.html`: what was tested, each step, why it didn't pass, Claude's last message, every check, and the full timeline of messages and tool calls.
+
+**Keep costs down.** Every run is a real Claude session. Use `--model claude-haiku-5-5` while you're getting a test right, start with skill tests, and run long workflows only when you need to.
+
+**Flaky results?** Claude doesn't do exactly the same thing every time. `--repeat 5` shows how often each check passed. Add `min_pass_rate: 0.8` to a test to pass it when 4 of 5 runs pass.
+
+---
+
+## Reference
+
+### Checks (`assert:`)
+
+A test passes when every check passes.
 
 | Check | Passes when |
 |---|---|
 | `skill_invoked: grilling` | Claude used that skill |
 | `skill_not_invoked: grilling` | Claude didn't use that skill |
 | `subagent_invoked: reviewer` | Claude handed work to that subagent |
-| `tool_order: [Read, Edit]` | Claude used these tools in this order (other tools in between are fine) |
+| `tool_order: [Read, Edit]` | Claude used these tools in this order (others in between are fine) |
 | `tool_not_called: Write` | Claude never used that tool |
 | `final_text_contains: "Done"` | Claude's last message contains the text |
-| `file_contains: {path: notes.md, text: "approved"}` | That file exists afterwards and contains the text |
-| `command_succeeds: python -m pytest -q` | The command runs successfully in the workspace afterwards |
+| `file_contains: {path: notes.md, text: "approved"}` | The file exists afterwards and contains the text |
+| `command_succeeds: npm test` | The command succeeds in the repo afterwards |
 
-A test passes when every check passes.
+### Repos (`fixture:`)
 
----
+Claude always works on a copy, so your real files are never touched.
 
-## 5. Which repo Claude works in (`fixture:`)
-
-Claude always works on a **copy**, so your real files are never touched.
-
-| `fixture:` | Claude gets |
+| `fixture:` | Claude works in |
 |---|---|
-| *(leave it out)* | An empty folder |
-| `.` | A copy of your repo, including work you haven't committed |
-| `some/folder` | A copy of that folder |
+| *(left out)* | An empty folder |
+| `.` | A copy of your repo, including uncommitted work |
+| `some/folder` | A copy of that folder (paths are from your repo root) |
 | `https://github.com/you/app.git` | A fresh clone |
 | `{git: https://github.com/you/app.git, ref: v1.2}` | A clone at that branch, tag or commit |
 
-Paths are relative to your repo root. The copy is kept after the run so you can look inside, and its path is in the dashboard.
+The copy is kept after the run so you can look inside. Its path is on the run's dashboard page.
 
----
+### Test fields
 
-## 6. Testing a plugin you're building
+| Field | Meaning |
+|---|---|
+| `description` | One sentence saying what the test checks, shown on the dashboard |
+| `skill`, `input` | Skill tests: which skill, and the text sent with it |
+| `triggers` | Skill tests: prompts that `should` and `should_not` pick the skill |
+| `prompt` | Agent tests: the first message |
+| `answers` | Replies, one per turn; also `/clear` and `!command` |
+| `interactive` | `true` to answer in the terminal once `answers` run out |
+| `fixture` | The repo Claude works in |
+| `assert` | The checks |
+| `name` | Display name (defaults to the file name) |
+| `timeout_s` | Seconds before one turn is stopped |
+| `repeat`, `min_pass_rate` | Run it N times; the share of runs that must pass |
 
-If you're building a skill pack, workflow or agent setup packaged as a Claude Code plugin (it has `.claude-plugin/plugin.json`), you'll want to run it on *other* projects, not on itself. Add one line to `skillbench/skillbench.yaml`:
-
-```yaml
-plugin: .
-```
-
-Now your plugin (its skills and its subagents) is loaded into every test, whatever the `fixture:` is. For example, to run your whole workflow on a repo of your choice:
-
-`skillbench/agent/loop.yaml`
-
-```yaml
-prompt: /my-plugin:start add a dark mode toggle
-fixture: https://github.com/you/test-app.git
-interactive: true          # you answer its questions; copy them into `answers:` later
-```
-
-```
-skillbench agent loop --model claude-haiku-5-5
-```
-
-Each run gets its own copy of the plugin, so Claude can't change your real one, and the run keeps the exact version it tested.
-
----
-
-## 7. Running tests
-
-```
-skillbench skill                 # all skill tests
-skillbench skill grilling        # just the tests for one skill (or one test by name)
-skillbench agent csv-export      # one agent test
-skillbench agent --repeat 5      # run each test 5 times
-skillbench agent --model claude-sonnet-5-5
-```
-
-The terminal keeps it short: one line per test, which step it's on while it runs, then whether it passed, how long it took and what it cost. If it didn't pass, one more line says why:
-
-```
-✓ hello-greets-by-name   passed      12s   $0.03
-✗ full-loop-damage       error       41s   $0.02
-    stopped at step 7: '!git commit -m "calc-damage: slice-1"' exited with code 1
-
-1 passed, 1 failed  ·  53s  ·  $0.05
-details: skillbench/runs/index.html
-```
-
-Everything else is in the dashboard: every message, tool call and check, and for a test that didn't pass, why and what Claude said last.
-
----
-
-## 8. More options
-
-You won't need these to start.
-
-**Check a skill gets picked on its own.** List prompts that should and shouldn't trigger it. Each runs briefly and stops as soon as Claude decides:
+### Settings for every test (`skillbench/skillbench.yaml`)
 
 ```yaml
-skill: grilling
-triggers:
-  should: ["stress-test my plan"]
-  should_not: ["fix this typo"]
-```
-
-**Answer Claude yourself.** Add `interactive: true` and skillbench asks *you* in the terminal whenever Claude is waiting for a reply. Press Enter on an empty line to finish.
-
-**Check for flakiness.** Claude doesn't do exactly the same thing every time. `--repeat 5` (or `repeat: 5` in the test) runs it 5 times and shows how often each check passed. Add `min_pass_rate: 0.8` to pass when 4 out of 5 runs pass.
-
-**Set defaults for every test** in `skillbench/skillbench.yaml`:
-
-```yaml
-plugin: .             # load this repo's plugin into every test (see section 6)
-model: claude-sonnet-5-5
-timeout_s: 600        # seconds before a turn is stopped
+plugin: .                 # load this repo's plugin into every test
+model: claude-haiku-5-5
 fixture: .
+timeout_s: 600
 repeat: 1
 min_pass_rate: 1.0
 ```
 
-A test's own settings win over these, and command-line flags win over both.
+A test's own fields win over these, and `--model` / `--repeat` win over both.
 
-**All test fields:**
+### Commands
 
-| Field | Meaning |
+| Command | Does |
 |---|---|
-| `skill` / `input` | Skill tests: which skill, and what to send it |
-| `prompt` | Agent tests: the first message |
-| `answers` | Replies sent one per turn; `/clear` and `!command` too (see "Workflows with several steps") |
-| `interactive` | Ask you in the terminal for replies |
-| `triggers` | Prompts that should / shouldn't pick the skill |
-| `fixture` | Which repo Claude works in |
-| `assert` | The checks |
-| `name` | A display name (defaults to the file name) |
-| `description` | One sentence saying what the test checks; shown in the dashboard |
-| `timeout_s`, `repeat`, `min_pass_rate` | As above |
+| `skillbench init` | Creates `skillbench/` with example tests |
+| `skillbench skill [name]` | Runs skill tests |
+| `skillbench agent [name]` | Runs agent tests |
+| `skillbench check` | Checks every test file, without running anything |
+| `skillbench install-skill` | Adds `/eval-creator` to Claude Code |
 
 ---
 
 ## Good to know
 
-- **It costs real usage.** Every run is a real Claude session. Start with skill tests; long agent tests take longer and cost more.
-- **Your personal setup is ignored.** Only the skills and plugins in the repo being tested are loaded, so results don't depend on whose machine runs them.
-- **Only test repos you trust.** Claude has full tool access inside the copy, and `command_succeeds` runs commands there.
-- **`command_succeeds` uses your system shell** (`sh` on Mac/Linux, `cmd` on Windows), so keep commands simple if you share tests across systems.
-- **Results** are in `skillbench/runs/`, which is git-ignored. Each run has a `run.json` and Claude's raw output.
-
-| Status | Meaning |
-|---|---|
-| `pass` | Every check passed |
-| `fail` | Claude finished, but a check failed |
-| `error` | Claude crashed or timed out, or the skill or fixture couldn't be found |
+- **Your personal Claude setup is ignored.** Only the skills and plugins in the repo being tested (plus `plugin:`) are loaded, so results don't depend on whose machine runs them.
+- **Only test repos you trust.** Claude has full tool access inside the copy, and `command_succeeds` and `!` commands run there.
+- **Commands use your system shell**: `sh` on Mac/Linux, `cmd` on Windows. Keep them simple if tests are shared across systems.
+- **Each run is saved** in `skillbench/runs/`, with a `run.json` and Claude's raw output.
+- **Upgrading:** `pip install -U skillbench-cli` (or your tool's upgrade command), then `skillbench install-skill`.
 
 ---
 
