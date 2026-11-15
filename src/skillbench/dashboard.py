@@ -1,5 +1,5 @@
-"""The skillbench/runs/index.html dashboard: every run, newest first, each selectable
-for its full timeline.
+"""The skillbench/runs/index.html dashboard: runs grouped under what they test, newest first,
+each selectable for its full timeline.
 
 One static file with every run's data embedded and no scripts, so it opens from disk. Selecting
 a run is a link to its detail section, which CSS `:target` reveals.
@@ -10,6 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,6 @@ _EMPTY_STATE = (
     "<p>Run <code>skillbench skill</code> or <code>skillbench agent</code>. Each run is added "
     "here with its full timeline.</p></section>"
 )
-_COLUMNS = ("what's tested", "status", "test", "when")
 _SHOWN_STEP_CHARS = 160
 _LISTED_SKILLS = 5  # a plugin's skills named in its description before "and N more"
 _ROW_DATE_FORMAT = "%d %b %H:%M"
@@ -45,35 +45,35 @@ _DASHBOARD_STYLE = """
 .runs header { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid var(--rule); }
 .runs h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -.01em; }
 .runs header p { margin: .2rem 0 0; color: var(--muted); font-size: .85rem; }
-.runs table, .runs tbody { display: block; border-collapse: collapse; }
-.runs thead { position: absolute; width: 1px; height: 1px; overflow: hidden;
-              clip-path: inset(50%); }
-.runs tr { position: relative; display: grid; grid-template-columns: 1fr auto;
-           grid-template-areas: "subject status" "test test" "when when";
-           gap: .1rem .75rem; padding: .75rem 1.25rem .75rem 1rem;
-           border-left: 4px solid transparent; border-bottom: 1px solid var(--rule); }
-.runs tr:hover { background: var(--code); }
-.runs tr:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
-.runs td { padding: 0; min-width: 0; }
-.runs .row-subject { grid-area: subject; font: 600 1rem/1.25 var(--display); color: var(--ink);
-                     overflow-wrap: anywhere; }
-.runs .row-subject a { text-decoration: none; outline: none; }
-.runs .row-subject a::after { content: ""; position: absolute; inset: 0; }
-.runs .row-repeat { font-weight: 400; color: var(--muted); }
-.runs .row-status { grid-area: status; font: 600 .85rem var(--display); }
-.runs .row-test { grid-area: test; font-size: .82rem; color: var(--ink); overflow: hidden;
-                  text-overflow: ellipsis; white-space: nowrap; }
-.runs .row-test .kind { color: var(--muted); margin-left: .35rem; }
-.runs .row-when { grid-area: when; font-size: .75rem; color: var(--muted);
+.runs .group { border-bottom: 1px solid var(--rule); background: none; border-radius: 0;
+              padding: 0; }
+.runs .group summary { padding: .8rem 1.25rem .8rem 1rem; font: 600 1rem/1.3 var(--display);
+                       color: var(--ink); }
+.runs .group summary::-webkit-details-marker { display: none; }
+.runs .group summary::before { content: "\\25b8"; color: var(--muted); width: .9rem; }
+.runs .group[open] summary::before { content: "\\25be"; }
+.runs .group-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.runs .group-tally { font: 400 .8rem var(--body); white-space: nowrap; }
+.runs .group-runs { list-style: none; margin: 0; padding: 0 0 .4rem; }
+.runs .run-entry { position: relative; display: grid; grid-template-columns: 1fr auto;
+                   gap: .1rem .75rem; padding: .55rem 1.25rem .55rem 2.1rem;
+                   border-left: 4px solid transparent; }
+.runs .run-entry:hover { background: var(--code); }
+.runs .run-entry:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
+.runs .run-entry a { font-size: .85rem; overflow-wrap: anywhere; text-decoration: none; }
+.runs .run-entry a::after { content: ""; position: absolute; inset: 0; }
+.runs .run-entry .kind { color: var(--muted); margin-left: .35rem; }
+.runs .run-status { font: 600 .8rem var(--display); }
+.runs .run-when { grid-column: 1 / -1; font-size: .75rem; color: var(--muted);
                   font-variant-numeric: tabular-nums; }
-.runs .row-when span + span { margin-left: .6rem; }
 .runs .empty { padding: 1.25rem; color: var(--muted); font-size: .9rem; }
 .details { padding: 2.5rem clamp(1rem, 4vw, 3.5rem) 4rem; min-width: 0; max-width: 72rem;
             overflow-wrap: anywhere; }
 .run-detail { display: none; scroll-margin-top: 1rem; }
 .run-detail:target,
 body:not(:has(.run-detail:target)) .run-detail:first-child { display: block; }
-body:not(:has(.run-detail:target)) .runs tbody tr:first-child { border-left-color: var(--ink);
+body:not(:has(.run-detail:target)) .runs details.group:first-of-type li:first-child {
+    border-left-color: var(--ink);
                                                                   background: var(--bench); }
 .subject h2 { font-size: clamp(2rem, 4.5vw, 3.1rem); font-stretch: condensed;
               letter-spacing: -.015em; line-height: 1.05; }
@@ -113,6 +113,7 @@ body:not(:has(.run-detail:target)) .runs tbody tr:first-child { border-left-colo
 _PREVIEW_CHARS = 2000
 _UNKNOWN_VALUE = "-"
 _COST_DECIMALS = 4
+EMPTY_LIST = '<p class="empty">Nothing here yet.</p>'
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # A tool call's summary line quotes this much of its most telling input.
 _INPUT_HINT_CHARS = 90
@@ -240,9 +241,9 @@ class _RunView:
     run_id: str
     status: str
     sort_time: datetime
-    # Runs of one test in one invocation (its repeats) share a group.
+    # What the run tests, by name: runs with the same name are listed under one subject.
     group: str
-    row_html: str
+    entry_html: str
     detail_html: str
 
 
@@ -280,26 +281,19 @@ def _view_run(run_dir: Path) -> _RunView | None:
 def _render_run(run_id: str, record: dict[str, Any]) -> _RunView:
     """Raises KeyError, TypeError or ValueError if the record is malformed."""
     status = record["status"]
-    when = (
-        f"<span>{escape(format_seconds(record['duration_s']))}</span>"
-        f"<span>{escape(_row_date(record['start_time']))}</span>"
+    when = f"{format_seconds(record['duration_s'])} · {_row_date(record['start_time'])}"
+    entry = (
+        f'<li class="run-entry"><a href="#{escape(_detail_id(run_id))}">'
+        f"{_row_test(record)}{_repeat_note(record)}</a>"
+        f'<span class="run-status status-{escape(status)}">{escape(status)}</span>'
+        f'<span class="run-when">{escape(when)}</span></li>'
     )
-    row = (
-        "<tr>"
-        f'<td class="row-subject">{_detail_link(run_id, _subject_title(record))}'
-        f"{_repeat_note(record)}</td>"
-        f'<td class="row-status">{_status_cell(status)}</td>'
-        f'<td class="row-test">{_row_test(record)}</td>'
-        f'<td class="row-when">{when}</td>'
-        "</tr>"
-    )
-    eval_id = record.get("eval_id")
     return _RunView(
         run_id=run_id,
         status=status,
         sort_time=datetime.fromisoformat(record["start_time"]).astimezone(),
-        group=f"{eval_id}/{record['test_name']}" if eval_id else run_id,
-        row_html=row,
+        group=_group_label(record),
+        entry_html=entry,
         detail_html=_render_detail(run_id, record),
     )
 
@@ -330,14 +324,6 @@ def _detail_id(run_id: str) -> str:
     return f"run-{run_id}"
 
 
-def _detail_link(run_id: str, label: str) -> str:
-    return f'<a href="#{escape(_detail_id(run_id))}">{escape(label)}</a>'
-
-
-def _status_cell(status: str) -> str:
-    return f'<span class="status-{escape(status)}">{escape(status)}</span>'
-
-
 def _render_detail(run_id: str, record: dict[str, Any]) -> str:
     """A run's page: what it tests and how, first; then its results."""
     return (
@@ -349,10 +335,12 @@ def _render_detail(run_id: str, record: dict[str, Any]) -> str:
 # --- what a run tests ---------------------------------------------------------------------
 
 
-def _subject_title(record: dict[str, Any]) -> str:
-    """What's under test, short: `grilling skill`, `overpowered 0.2.0`, `This repo's setup`."""
-    name, stamp, _ = _subject(record)
-    return f"{name} {stamp}" if stamp else name
+def _group_label(record: dict[str, Any]) -> str:
+    """The name a run is listed under: its skill, its plugin's name, or this repo. No versions."""
+    subject = record.get("subject")
+    if subject and subject["kind"] == "plugins":
+        return ", ".join(plugin["name"] for plugin in subject["plugins"])
+    return _subject(record)[0]
 
 
 def _render_subject(record: dict[str, Any]) -> str:
@@ -478,8 +466,10 @@ def _render_steps(record: dict[str, Any]) -> str:
 
 
 def _render_page(views: list[_RunView]) -> str:
-    header = "".join(f"<th>{escape(column)}</th>" for column in _COLUMNS)
-    rows = "".join(view.row_html for view in views)
+    groups = [list(group) for _, group in groupby(views, key=lambda view: view.group)]
+    listing = "".join(
+        _render_group(group, is_open=index == 0) for index, group in enumerate(groups)
+    )
     details = "".join(view.detail_html for view in views) or _EMPTY_STATE
     selected_rows = "".join(_selected_row_style(view.run_id) for view in views)
     return (
@@ -491,12 +481,26 @@ def _render_page(views: list[_RunView]) -> str:
         '<body class="dashboard">'
         '<nav class="runs" aria-label="Runs">'
         f"<header><h1>skillbench</h1><p>{escape(_tally(views))}</p></header>"
-        f'<table aria-label="Runs, newest first"><thead><tr>{header}</tr></thead>'
-        f"<tbody>{rows}</tbody></table></nav>"
+        f"{listing or EMPTY_LIST}</nav>"
         f'<main class="details">{details}</main>'
         # After the list, not in <head>: these rules name every run.
         f"<style>{selected_rows}</style>"
         "</body></html>\n"
+    )
+
+
+def _render_group(views: list[_RunView], is_open: bool) -> str:
+    """One subject: its name and how many of its runs passed. Open, it lists its runs."""
+    passed = sum(view.status == "pass" for view in views)
+    tally_status = "pass" if passed == len(views) else "fail"
+    open_attribute = " open" if is_open else ""
+    return (
+        f'<details class="group"{open_attribute}>'
+        f'<summary><span class="group-name">{escape(views[0].group)}</span>'
+        f'<span class="group-tally status-{tally_status}">{passed} of {len(views)} passed</span>'
+        "</summary>"
+        f'<ul class="group-runs">{"".join(view.entry_html for view in views)}</ul>'
+        "</details>"
     )
 
 
@@ -516,7 +520,7 @@ def _selected_row_style(run_id: str) -> str:
     """Marks the list row of the run whose detail is showing."""
     detail_id = _css_string(_detail_id(run_id))
     return (
-        f'body:has([id="{detail_id}"]:target) .runs tr:has(a[href="#{detail_id}"])'
+        f'body:has([id="{detail_id}"]:target) .runs li:has(a[href="#{detail_id}"])'
         "{border-left-color:var(--ink);background:var(--bench)}"
     )
 
