@@ -10,6 +10,7 @@ from conftest import (
     assert_loads_nothing_from_the_network,
     load_run_record,
     run_skillbench,
+    runs_dir,
     write_test_yaml,
 )
 
@@ -101,7 +102,7 @@ class _ElementTextParser(HTMLParser):
 
 
 def _dashboard_html() -> str:
-    return (Path.cwd() / "runs" / "index.html").read_text(encoding="utf-8")
+    return (runs_dir() / "index.html").read_text(encoding="utf-8")
 
 
 def _runs_table(html: str) -> list[dict]:
@@ -134,7 +135,7 @@ def _run(fake_claude, monkeypatch, name: str, *streams: str, **spec) -> dict:
 
 
 def _record_for(test_name: str) -> dict:
-    for run_json in (Path.cwd() / "runs").glob("*/run.json"):
+    for run_json in runs_dir().glob("*/run.json"):
         record = json.loads(run_json.read_text(encoding="utf-8"))
         if record["test_name"] == test_name:
             return record
@@ -142,7 +143,7 @@ def _record_for(test_name: str) -> dict:
 
 
 def _set_start_time(record: dict, start_time: str) -> None:
-    run_json = Path.cwd() / "runs" / record["run_id"] / "run.json"
+    run_json = runs_dir() / record["run_id"] / "run.json"
     run_json.write_text(json.dumps({**record, "start_time": start_time}), encoding="utf-8")
 
 
@@ -192,7 +193,7 @@ def test_ac4_1_runs_are_listed_newest_first_by_start_time(fake_claude, monkeypat
 
 
 def _rewrite_record(record: dict, **fields) -> None:
-    run_json = Path.cwd() / "runs" / record["run_id"] / "run.json"
+    run_json = runs_dir() / record["run_id"] / "run.json"
     run_json.write_text(json.dumps({**record, **fields}), encoding="utf-8")
 
 
@@ -297,7 +298,7 @@ def test_ac4_4_missing_or_corrupt_run_json_is_a_broken_item_and_the_rest_still_r
     fake_claude, monkeypatch
 ):
     _run(fake_claude, monkeypatch, "healthy")
-    runs_root = Path.cwd() / "runs"
+    runs_root = runs_dir()
     (runs_root / "no-record").mkdir()
     (runs_root / "bad-json").mkdir()
     (runs_root / "bad-json" / "run.json").write_text("{not json", encoding="utf-8")
@@ -316,7 +317,7 @@ def test_ac4_4_missing_or_corrupt_run_json_is_a_broken_item_and_the_rest_still_r
 
 
 def test_ac4_4_broken_item_shows_why_it_is_broken(fake_claude, monkeypatch):
-    runs_root = Path.cwd() / "runs"
+    runs_root = runs_dir()
     (runs_root / "missing").mkdir(parents=True)
     (runs_root / "corrupt").mkdir()
     (runs_root / "corrupt" / "run.json").write_text("{not json", encoding="utf-8")
@@ -333,7 +334,7 @@ def test_ac4_4_broken_item_shows_why_it_is_broken(fake_claude, monkeypatch):
 
 def test_ac4_5_dashboard_command_regenerates_without_running_tests(fake_claude, monkeypatch):
     _run(fake_claude, monkeypatch, "earlier")
-    index_path = Path.cwd() / "runs" / "index.html"
+    index_path = runs_dir() / "index.html"
     index_path.unlink()
     launches_before = len(fake_claude.invocations)
 

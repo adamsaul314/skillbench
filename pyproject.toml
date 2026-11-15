@@ -1,9 +1,12 @@
 [project]
 name = "skillbench"
 version = "0.1.0"
-description = "Eval framework for agent skills: runs YAML-defined skill tests through agent CLIs headless."
+description = "Test agent skills and full agent loops against Claude Code and Copilot CLI."
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6.0"]
+dependencies = [
+    "pyyaml>=6.0",
+    "rich>=13.7",
+]
 
 [project.scripts]
 skillbench = "skillbench.cli:main"

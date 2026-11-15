@@ -5,7 +5,6 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 from skillbench import claude_command, copilot_command
 from skillbench.claude_trace import parse_claude_stream
@@ -33,8 +32,6 @@ class Backend:
     # Arguments for one turn, given its message and the session to continue (None = new).
     turn_args: Callable[[str, str | None], list[str]]
     parse_stream: Callable[[bytes], TurnInfo]
-    # Makes the test's skill visible to the agent before the first turn.
-    prepare_workspace: Callable[[TestSpec, Path], None]
     # True if skillbench picks the session id up front (the CLI is told it on every turn);
     # False if the CLI reports one in its first turn's events.
     assigns_session_id: bool
@@ -51,10 +48,6 @@ def _claude_session_args(spec: TestSpec, model: str | None) -> list[str]:
     return claude_command.build_session_args(spec, model, has_api_key)
 
 
-def _no_workspace_setup(_spec: TestSpec, _workspace: Path) -> None:
-    """Claude is pointed at the skill by a flag instead."""
-
-
 _BACKENDS = {
     "claude": Backend(
         name="claude",
@@ -62,7 +55,6 @@ _BACKENDS = {
         session_args=_claude_session_args,
         turn_args=claude_command.build_turn_args,
         parse_stream=parse_claude_stream,
-        prepare_workspace=_no_workspace_setup,
         assigns_session_id=False,
     ),
     "copilot": Backend(
@@ -71,7 +63,6 @@ _BACKENDS = {
         session_args=copilot_command.build_session_args,
         turn_args=copilot_command.build_turn_args,
         parse_stream=parse_copilot_stream,
-        prepare_workspace=copilot_command.install_skill,
         assigns_session_id=True,
     ),
 }

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from conftest import run_skillbench, write_test_yaml
+from conftest import run_skillbench, runs_dir, write_test_yaml
 
 PROMPT = "/overpowered:grilling an idea"
 
@@ -11,7 +11,7 @@ PROMPT = "/overpowered:grilling an idea"
 def _run_records() -> list[dict]:
     records = [
         json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-        for run_dir in (Path.cwd() / "runs").iterdir()
+        for run_dir in runs_dir().iterdir()
         if run_dir.is_dir()
     ]
     return sorted(records, key=lambda record: record["start_time"])

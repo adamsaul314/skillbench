@@ -1,5 +1,9 @@
 """Built-in assertions: parsing a test's `assert:` list and checking it against a finished run."""
 
+import os
+import re
+import shlex
+import shutil
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -12,6 +16,10 @@ _SKILL_TOOL = "Skill"
 _FILE_CONTAINS_KEYS = frozenset({"path", "text"})
 # How much of a failed command's output its reason quotes: enough to see the error, not a log.
 _COMMAND_OUTPUT_TAIL_CHARS = 2000
+_TOOL_ORDER_SHOWN_CALLS = 20
+_IS_WINDOWS = os.name == "nt"
+# Characters that only a shell understands: pipes, chaining, redirects, variables, globs.
+_SHELL_SYNTAX = re.compile(r"[|&;<>()$`*?%!^]")
 
 
 class InvalidAssertionError(Exception):
@@ -55,6 +63,10 @@ class AssertionResult:
 
 def _is_non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and value != ""
+
+
+def _is_non_empty_string_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(map(_is_non_empty_string, value))
 
 
 def _is_positive_int(value: Any) -> bool:
@@ -107,29 +119,64 @@ def _times(count: int) -> str:
     return "1 time" if count == 1 else f"{count} times"
 
 
-def _check_skill_invoked(skill_name: str, facts: RunFacts) -> tuple[bool, str]:
-    invoked = [
-        call["input"].get("skill")
-        for call in _walk_tool_calls(facts.trace["items"])
+def skill_name_matches(actual: Any, expected: str) -> bool:
+    """`planner` matches `planner` and a plugin's `my-plugin:planner`, so one test reads the same
+    on Claude (which prefixes plugin skills) and Copilot (which doesn't)."""
+    if not isinstance(actual, str):
+        return False
+    if actual == expected:
+        return True
+    return ":" not in expected and actual.rsplit(":", 1)[-1] == expected
+
+
+def invoked_skills(trace: dict[str, Any]) -> list[Any]:
+    """The skill named by each Skill tool call, in order, subagents included."""
+    return [
+        call["input"].get("skill") if isinstance(call["input"], dict) else None
+        for call in _walk_tool_calls(trace["items"])
         if call["name"] == _SKILL_TOOL
     ]
-    count = invoked.count(skill_name)
+
+
+def _skill_invocations(skill_name: str, facts: RunFacts) -> tuple[int, str | None]:
+    """How many Skill tool calls ran the skill, and, when none did, how else it was run (a
+    `/skill` prompt or user message), if at all."""
+    count = sum(1 for name in invoked_skills(facts.trace) if skill_name_matches(name, skill_name))
+    if count:
+        return count, None
+    if any(skill_name_matches(name, skill_name) for name in facts.loaded_skills):
+        if _is_slash_command_for(facts.prompt, skill_name):
+            return 0, "the prompt"
+        if any(_is_slash_command_for(text, skill_name) for text in _user_message_texts(facts)):
+            return 0, "a user message"
+    return 0, None
+
+
+def _check_skill_invoked(skill_name: str, facts: RunFacts) -> tuple[bool, str]:
+    count, invoked_by = _skill_invocations(skill_name, facts)
     if count:
         return True, f"{skill_name} was invoked {_times(count)}"
-    if skill_name in facts.loaded_skills:
-        if _is_slash_command_for(facts.prompt, skill_name):
-            return True, f"{skill_name} was invoked by the prompt"
-        if any(_is_slash_command_for(text, skill_name) for text in _user_message_texts(facts)):
-            return True, f"{skill_name} was invoked by a user message"
-    others = ", ".join(str(name) for name in invoked) or "none"
+    if invoked_by is not None:
+        return True, f"{skill_name} was invoked by {invoked_by}"
+    others = ", ".join(str(name) for name in invoked_skills(facts.trace)) or "none"
     return False, f"{skill_name} was never invoked (skills invoked: {others})"
+
+
+def _check_skill_not_invoked(skill_name: str, facts: RunFacts) -> tuple[bool, str]:
+    count, invoked_by = _skill_invocations(skill_name, facts)
+    if count:
+        return False, f"{skill_name} was invoked {_times(count)}"
+    if invoked_by is not None:
+        return False, f"{skill_name} was invoked by {invoked_by}"
+    others = ", ".join(str(name) for name in invoked_skills(facts.trace)) or "none"
+    return True, f"{skill_name} was never invoked (skills invoked: {others})"
 
 
 def _is_slash_command_for(message: str, skill_name: str) -> bool:
     """A message starting `/skill args` runs the skill directly, without a Skill tool call
     (provided the CLI loaded that skill)."""
     command = message.split(maxsplit=1)[0] if message.strip() else ""
-    return command == f"/{skill_name}"
+    return command.startswith("/") and skill_name_matches(command[1:], skill_name)
 
 
 def _user_message_texts(facts: RunFacts) -> list[str]:
@@ -150,6 +197,22 @@ def _check_tool_called(tool_name: str, facts: RunFacts) -> tuple[bool, str]:
 def _check_tool_not_called(tool_name: str, facts: RunFacts) -> tuple[bool, str]:
     count = _count_tool_calls(facts, tool_name)
     return count == 0, _tool_call_reason(tool_name, count)
+
+
+def _check_tool_order(expected: list[str], facts: RunFacts) -> tuple[bool, str]:
+    """The tools were called in this order; other calls may come in between."""
+    called = [call["name"] for call in _walk_tool_calls(facts.trace["items"])]
+    position = 0
+    for name in called:
+        if position < len(expected) and name == expected[position]:
+            position += 1
+    if position == len(expected):
+        return True, f"called in order: {' -> '.join(expected)}"
+    shown = ", ".join(called[:_TOOL_ORDER_SHOWN_CALLS]) or "none"
+    if len(called) > _TOOL_ORDER_SHOWN_CALLS:
+        shown += f", ... ({len(called)} calls)"
+    matched = " -> ".join(expected[:position]) or "nothing"
+    return False, (f"{expected[position]} was not called after {matched} (calls in order: {shown})")
 
 
 def _check_file_exists(relative_path: str, facts: RunFacts) -> tuple[bool, str]:
@@ -197,16 +260,36 @@ def _check_exit_ok(_expected: bool, facts: RunFacts) -> tuple[bool, str]:
     return facts.exit_code == 0, f"the CLI exited with code {facts.exit_code}"
 
 
+def command_argv(command: str) -> str | list[str]:
+    """How `command_succeeds` runs a command. A plain command (`python -m pytest -q`) is split
+    into arguments and run directly, the same way on every OS, with the program found on PATH
+    (including Windows .cmd/.exe shims). One using shell syntax (pipes, &&, redirects,
+    variables) goes to the platform shell as written: sh on macOS/Linux, cmd on Windows."""
+    if _SHELL_SYNTAX.search(command):
+        return command
+    try:
+        # POSIX rules would eat the backslashes of Windows paths; there, only strip quotes.
+        argv = [_unquote(token) for token in shlex.split(command, posix=not _IS_WINDOWS)]
+    except ValueError:
+        return command
+    if not argv:
+        return command
+    program = shutil.which(argv[0])
+    return [program or argv[0], *argv[1:]]
+
+
+def _unquote(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
 def _check_command_succeeds(command: str, facts: RunFacts) -> tuple[bool, str]:
-    completed = subprocess.run(
-        command,
-        shell=True,
-        cwd=facts.workspace,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    argv = command_argv(command)
+    try:
+        completed = _run_command(argv, facts.workspace)
+    except OSError as error:
+        return False, f"{command!r} could not be run: {error}"
     reason = f"{command!r} exited with code {completed.returncode}"
     if completed.returncode == 0:
         return True, reason
@@ -214,13 +297,31 @@ def _check_command_succeeds(command: str, facts: RunFacts) -> tuple[bool, str]:
     return False, f"{reason}; output: {output_tail!r}"
 
 
+def _run_command(argv: str | list[str], workspace: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        shell=isinstance(argv, str),
+        cwd=workspace,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
 _Checker = Callable[[Any, RunFacts], tuple[bool, str]]
 
 # assertion type -> (value validator, description of the expected value, checker)
 _ASSERTION_TYPES: dict[str, tuple[Callable[[Any], bool], str, _Checker]] = {
     "skill_invoked": (_is_non_empty_string, "a skill name", _check_skill_invoked),
+    "skill_not_invoked": (_is_non_empty_string, "a skill name", _check_skill_not_invoked),
     "tool_called": (_is_non_empty_string, "a tool name", _check_tool_called),
     "tool_not_called": (_is_non_empty_string, "a tool name", _check_tool_not_called),
+    "tool_order": (
+        _is_non_empty_string_list,
+        "a non-empty list of tool names",
+        _check_tool_order,
+    ),
     "file_exists": (
         _is_workspace_path,
         "a relative path inside the workspace",

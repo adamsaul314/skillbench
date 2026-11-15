@@ -9,165 +9,217 @@ from typing import Any
 
 from skillbench.answers import AskUser
 from skillbench.answers_file import AnswersNotSavedError, save_answers
-from skillbench.backends import (
-    BackendNotFoundError,
-    InstalledBackend,
-    find_installed,
-    not_installed_error,
-)
+from skillbench.backends import BackendNotFoundError, find_installed, not_installed_error
 from skillbench.config import BACKEND_NAMES, ConfigError, TestSpec, load_test
 from skillbench.dashboard import INDEX_FILE_NAME, write_dashboard
+from skillbench.progress import Eta, Progress, RunHeading, load_history, make_progress
+from skillbench.project import AGENT_TESTS_DIR_NAME, SKILL_TESTS_DIR_NAME, Project, find_project
 from skillbench.report import format_duration, format_optional
 from skillbench.runner import RunOptions, run_test
+from skillbench.scaffold import scaffold
+from skillbench.suite import GroupResult, Plan, PlannedRun, collect_results, plan_runs
 
-_RUNS_DIR_NAME = "runs"
-_TEST_FILE_PATTERN = "*.yaml"
 _EXIT_OK = 0
 _EXIT_RUN_FAILED = 1
 _EXIT_USAGE_ERROR = 2
 _SUMMARY_HEADER = ("test", "backend", "status", "duration", "turns")
-_SKIPPED_STATUS = "skipped"
-_EVAL_ID_SUFFIX_LENGTH = 6
-_COLUMN_GAP = "  "
 _ANSWER_PROMPT = "your answer (empty or /done to finish): "
-_YES_ANSWERS = ("y", "yes")
+_NO_PROJECT = "no skillbench/ folder here or above; run `skillbench init` to create one"
+# Which tests folder each test command runs.
+_TEST_COMMANDS = {"skill": SKILL_TESTS_DIR_NAME, "agent": AGENT_TESTS_DIR_NAME}
+
+
+class _UsageError(Exception):
+    """A problem with how skillbench was invoked; reported with exit code 2."""
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="skillbench", description="Run agent skill tests.")
+    args = _parser().parse_args(argv)
+    if args.command == "init":
+        return _init_command()
+    try:
+        project = find_project(Path.cwd())
+        if project is None:
+            raise _UsageError(_NO_PROJECT)
+        if args.command == "dashboard":
+            write_dashboard(project.runs_dir)
+            print(f"dashboard: {project.runs_dir / INDEX_FILE_NAME}")
+            return _EXIT_OK
+        specs = _load_specs(args, project)
+        backends = [name for name in BACKEND_NAMES if getattr(args, name)]
+        options = _run_options(args, project, backends or project.backends)
+    except (ConfigError, BackendNotFoundError, _UsageError) as error:
+        print(f"skillbench: {error}", file=sys.stderr)
+        return _EXIT_USAGE_ERROR
+    return _run(plan_runs(specs, options, args.repeat), project.runs_dir)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="skillbench", description="Test agent skills and full agent loops."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    run_parser = commands.add_parser("run", help="run a test YAML file or a directory of them")
-    run_parser.add_argument(
-        "test_path", type=Path, help=f"a test .yaml file, or a directory of {_TEST_FILE_PATTERN}"
-    )
-    run_parser.add_argument("--model", help="model to use, overriding the test's model:")
-    run_parser.add_argument(
-        "--backend",
-        choices=BACKEND_NAMES,
-        help="agent CLI to run on (default: the installed ones; asks if both are)",
-    )
-    commands.add_parser(
-        "dashboard", help=f"regenerate {_RUNS_DIR_NAME}/{INDEX_FILE_NAME} without running tests"
-    )
-    args = parser.parse_args(argv)
-    runs_root = Path.cwd() / _RUNS_DIR_NAME
-    if args.command == "dashboard":
-        return _dashboard_command(runs_root)
-    return _run_command(args, runs_root)
+    commands.add_parser("init", help="create the skillbench/ folder with sample tests")
+    for name, folder in _TEST_COMMANDS.items():
+        test_parser = commands.add_parser(name, help=f"run tests in skillbench/{folder}/")
+        test_parser.add_argument(
+            "target", nargs="?", help="a test or skill name, or a test file or folder"
+        )
+        _add_run_flags(test_parser)
+    run_parser = commands.add_parser("run", help="run a test file or a folder of them")
+    run_parser.add_argument("target", type=Path)
+    _add_run_flags(run_parser)
+    commands.add_parser("dashboard", help="rebuild skillbench/runs/index.html")
+    return parser
 
 
-def _dashboard_command(runs_root: Path) -> int:
-    write_dashboard(runs_root)
-    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
+def _add_run_flags(parser: argparse.ArgumentParser) -> None:
+    for name in BACKEND_NAMES:
+        parser.add_argument(f"--{name}", action="store_true", help=f"run on {name}")
+    parser.add_argument("--model", help="model to use, passed to the agent CLI as given")
+    parser.add_argument("--repeat", type=_positive_int, metavar="N", help="run each test N times")
+
+
+def _positive_int(text: str) -> int:
+    if not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return int(text)
+
+
+def _init_command() -> int:
+    created, existing = scaffold(Path.cwd())
+    for path in created:
+        print(f"created  {path.relative_to(Path.cwd()).as_posix()}")
+    for path in existing:
+        print(f"exists   {path.relative_to(Path.cwd()).as_posix()} (left as is)")
+    if created:
+        print("\nnext: edit the sample tests, then run `skillbench skill` or `skillbench agent`")
     return _EXIT_OK
 
 
-def _run_command(args: argparse.Namespace, runs_root: Path) -> int:
-    ask_user: AskUser | None = _ask_in_terminal if sys.stdin.isatty() else None
-    try:
-        # Validate every test before running any, so one bad file doesn't waste a partial suite.
-        specs = [load_test(path) for path in _find_test_files(args.test_path)]
-        backends = _select_backends(args.backend, can_ask=ask_user is not None)
-    except (ConfigError, BackendNotFoundError) as error:
-        print(f"skillbench: {error}", file=sys.stderr)
-        return _EXIT_USAGE_ERROR
-    eval_id = _new_eval_id()
-    all_options = [
-        RunOptions(installed, eval_id, model_override=args.model, ask_user=ask_user)
-        for installed in backends
+def _load_specs(args: argparse.Namespace, project: Project) -> list[TestSpec]:
+    target = args.target
+    if args.command == "run" or (target is not None and Path(target).exists()):
+        return [load_test(path, project) for path in _find_test_files(Path(target))]
+    tests_dir = project.directory / _TEST_COMMANDS[args.command]
+    specs = [load_test(path, project) for path in _find_test_files(tests_dir)]
+    if target is None:
+        return specs
+    # A test is picked by its name, its file name, or the skill it tests.
+    matching = [
+        spec
+        for spec in specs
+        if target in (spec.name, spec.source_path.stem, spec.skill)
+        or (spec.skill or "").rsplit(":", 1)[-1] == target
     ]
-    summary_rows, all_passed = _run_all(specs, all_options, runs_root)
-    print(_format_summary(summary_rows))
-    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
-    return _EXIT_OK if all_passed else _EXIT_RUN_FAILED
-
-
-def _run_all(
-    specs: list[TestSpec], all_options: list[RunOptions], runs_root: Path
-) -> tuple[list[tuple[str, ...]], bool]:
-    """Run each test on each backend it allows; return the summary rows and whether every run
-    passed. A backend a test's `backends:` excludes gets a `skipped` row instead."""
-    summary_rows = []
-    all_passed = True
-    for spec in specs:
-        for options in all_options:
-            backend_name = options.installed.backend.name
-            if not spec.runs_on(backend_name):
-                summary_rows.append(_skipped_row(spec, backend_name))
-                continue
-            record = _run_and_report(spec, runs_root, options)
-            summary_rows.append(_summary_row(record))
-            all_passed = all_passed and record["status"] == "pass"
-    return summary_rows, all_passed
-
-
-def _select_backends(requested: str | None, can_ask: bool) -> list[InstalledBackend]:
-    """The requested backend; otherwise every runnable one, narrowed to the primary unless the
-    user agrees to run on all of them."""
-    if requested is not None:
-        installed = find_installed(requested)
-        if installed is None:
-            raise not_installed_error([requested])
-        return [installed]
-    available = _detect_backends()
-    if len(available) > 1 and not (can_ask and _confirm(_run_on_all_question(available))):
-        return available[:1]
-    return available
-
-
-def _detect_backends() -> list[InstalledBackend]:
-    """Every runnable backend, primary first. Reports the others on stderr as skipped."""
-    found = {name: find_installed(name) for name in BACKEND_NAMES}
-    available = [installed for installed in found.values() if installed is not None]
-    if not available:
-        raise not_installed_error(list(BACKEND_NAMES))
-    for name, installed in found.items():
-        if installed is None:
-            print(
-                f"skillbench: {name} is not installed or not runnable; skipping it", file=sys.stderr
-            )
-    return available
-
-
-def _run_on_all_question(available: list[InstalledBackend]) -> str:
-    names = " and ".join(installed.backend.name for installed in available)
-    return f"run on both {names}? [y/N] "
-
-
-def _run_and_report(spec: TestSpec, runs_root: Path, options: RunOptions) -> dict[str, Any]:
-    """Run one test on one backend, refresh the dashboard and print the outcome."""
-    record = run_test(spec, runs_root, options)
-    write_dashboard(runs_root)
-    print(_format_run_line(record, runs_root))
-    if options.ask_user is not None:
-        _offer_to_save_answers(record)
-    return record
-
-
-def _new_eval_id() -> str:
-    suffix = uuid.uuid4().hex[:_EVAL_ID_SUFFIX_LENGTH]
-    return f"{datetime.now():%Y%m%d-%H%M%S}-{suffix}"
+    if not matching:
+        names = ", ".join(spec.name for spec in specs)
+        raise _UsageError(f"no test or skill named '{target}' in {tests_dir} (tests: {names})")
+    return matching
 
 
 def _find_test_files(test_path: Path) -> list[Path]:
     if not test_path.is_dir():
         return [test_path]
-    test_files = sorted(
-        test_path.rglob(_TEST_FILE_PATTERN),
-        key=lambda path: path.relative_to(test_path).as_posix(),
-    )
+    test_files = sorted(test_path.rglob("*.yaml"), key=lambda p: p.relative_to(test_path).parts)
     if not test_files:
-        raise ConfigError(f"{test_path}: no {_TEST_FILE_PATTERN} test files found")
+        raise ConfigError(f"{test_path}: no *.yaml test files found")
     return test_files
 
 
-def _ask_in_terminal(agent_final_text: str) -> str | None:
+def _run_options(
+    args: argparse.Namespace, project: Project, wanted: list[str] | None
+) -> list[RunOptions]:
+    """One RunOptions per backend: the wanted ones, else the installed one (Claude when both
+    are installed)."""
+    if wanted:
+        installed = [find_installed(name) for name in wanted]
+        missing = [name for name, found in zip(wanted, installed, strict=True) if found is None]
+        if missing:
+            raise not_installed_error(missing)
+    else:
+        installed = [found for name in BACKEND_NAMES if (found := find_installed(name))]
+        if not installed:
+            raise not_installed_error(list(BACKEND_NAMES))
+        if len(installed) > 1:
+            print(
+                "skillbench: using claude (--copilot for copilot, both flags for both)",
+                file=sys.stderr,
+            )
+            installed = installed[:1]
+    if args.model is not None and len(installed) > 1:
+        raise _UsageError("--model needs a single backend: add --claude or --copilot")
+    progress = make_progress()
+    ask_user = _terminal_asker(progress) if sys.stdin.isatty() else None
+    eval_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+    return [
+        RunOptions(
+            backend,
+            eval_id,
+            project.cache_dir,
+            model_override=args.model,
+            ask_user=ask_user,
+            progress=progress,
+        )
+        for backend in installed
+        if backend is not None
+    ]
+
+
+def _run(plan: Plan, runs_root: Path) -> int:
+    print(f"skillbench: {plan.describe()}")
+    eta = Eta(load_history(runs_root), [run.key for run in plan.runs])
+    records = []
+    for index, run in enumerate(plan.runs):
+        progress = run.options.progress
+        eta.start_run(index)
+        progress.run_started(_heading(run, index, len(plan.runs)), eta)
+        record = run_test(run.spec, runs_root, run.options, repeat_index=run.repeat_index)
+        eta.finish_run(record["duration_s"])
+        write_dashboard(runs_root)
+        progress.run_finished(_run_line(record))
+        if run.options.ask_user is not None:
+            _offer_to_save_answers(record)
+        records.append(record)
+    results = collect_results(plan.runs, records)
+    print(_summary(results, plan.skipped))
+    print(f"dashboard: {runs_root / INDEX_FILE_NAME}")
+    return _EXIT_OK if all(result.status == "pass" for result in results) else _EXIT_RUN_FAILED
+
+
+def _heading(run: PlannedRun, index: int, total: int) -> RunHeading:
+    spec = run.spec
+    planned_turns = None
+    if not spec.is_interactive:
+        planned_turns = 1 if spec.trigger is not None else 1 + len(spec.answers)
+        if spec.max_turns is not None:
+            planned_turns = min(planned_turns, spec.max_turns)
+    return RunHeading(
+        index=index + 1,
+        total=total,
+        test_name=spec.name,
+        backend=run.options.installed.backend.name,
+        model=run.options.model_override or spec.model,
+        planned_turns=planned_turns,
+        repeat_index=run.repeat_index,
+        repeat_count=spec.repeat,
+    )
+
+
+def _terminal_asker(progress: Progress) -> AskUser:
     """Show what the agent ended its turn with and read the user's reply; None at end of input."""
-    print(f"\n--- agent ---\n{agent_final_text}\n-------------")
-    try:
-        return input(_ANSWER_PROMPT)
-    except EOFError:
-        return None
+
+    def ask(agent_final_text: str) -> str | None:
+        progress.pause()
+        print(f"\n--- agent ---\n{agent_final_text}\n-------------")
+        try:
+            return input(_ANSWER_PROMPT)
+        except EOFError:
+            return None
+        finally:
+            progress.resume()
+
+    return ask
 
 
 def _offer_to_save_answers(record: dict[str, Any]) -> None:
@@ -176,7 +228,11 @@ def _offer_to_save_answers(record: dict[str, Any]) -> None:
     if not any(message["source"] == "live" for message in messages):
         return
     test_path = Path(record["test_file"])
-    if not _confirm(f"save these answers to {test_path}? [y/N] "):
+    try:
+        reply = input(f"save these answers to {test_path}? [y/N] ")
+    except EOFError:
+        return
+    if reply.strip().lower() not in ("y", "yes"):
         return
     try:
         save_answers(test_path, [message["text"] for message in messages])
@@ -184,40 +240,42 @@ def _offer_to_save_answers(record: dict[str, Any]) -> None:
         print(f"skillbench: {error}", file=sys.stderr)
 
 
-def _confirm(question: str) -> bool:
-    """Ask a yes/no question in the terminal; anything but yes (or end of input) is no."""
-    try:
-        reply = input(question)
-    except EOFError:
-        return False
-    return reply.strip().lower() in _YES_ANSWERS
-
-
-def _format_run_line(record: dict[str, Any], runs_root: Path) -> str:
-    report_path = runs_root / record["run_id"] / "report.html"
-    line = f"{record['test_name']}: {record['status']} in {record['duration_s']}s -> {report_path}"
+def _run_line(record: dict[str, Any]) -> str:
+    repeat = record["repeat_count"]
+    repeat_text = f" (repeat {record['repeat_index']}/{repeat})" if repeat > 1 else ""
+    line = f"{record['test_name']}{repeat_text}: {record['status']} in {record['duration_s']}s"
     return f"{line}\n  {record['error']}" if record["error"] else line
 
 
-def _format_summary(rows: list[tuple[str, ...]]) -> str:
+def _summary(results: list[GroupResult], skipped: list[tuple[TestSpec, str]]) -> str:
+    """The results table, then for repeated tests the pass rate and each check's hit count."""
+    rows = [_summary_row(result) for result in results]
+    rows += [(spec.name, backend, "skipped", "-", "-") for spec, backend in skipped]
     table = [_SUMMARY_HEADER, *rows]
     widths = [max(len(row[column]) for row in table) for column in range(len(_SUMMARY_HEADER))]
-    return "\n".join(
-        _COLUMN_GAP.join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
+    lines = [
+        "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
         for row in table
-    )
+    ]
+    for result in results:
+        if result.is_repeated:
+            runs = len(result.records)
+            lines.append(
+                f"\n{result.test_name} ({result.backend}): {result.passes}/{runs} runs passed, "
+                f"needs {result.min_pass_rate:.0%} -> {result.status}"
+            )
+            lines += [f"  {label}  {hits}/{runs}" for label, hits in result.assertion_hits()]
+    return "\n".join(lines)
 
 
-def _summary_row(record: dict[str, Any]) -> tuple[str, ...]:
+def _summary_row(result: GroupResult) -> tuple[str, ...]:
+    status = result.status
+    if result.is_repeated:
+        status = f"{status} {result.passes}/{len(result.records)}"
     return (
-        record["test_name"],
-        record["backend"],
-        record["status"],
-        format_duration(record["duration_s"]),
-        format_optional(record["trace"]["num_turns"]),
+        result.test_name,
+        result.backend,
+        status,
+        format_duration(sum(record["duration_s"] for record in result.records)),
+        format_optional(result.records[-1]["trace"]["num_turns"]),
     )
-
-
-def _skipped_row(spec: TestSpec, backend_name: str) -> tuple[str, ...]:
-    """A test whose `backends:` excludes a backend this invocation runs on."""
-    return (spec.name, backend_name, _SKIPPED_STATUS, format_optional(None), format_optional(None))

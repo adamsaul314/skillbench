@@ -109,7 +109,8 @@ def fake_agents(tmp_path, monkeypatch) -> FakeAgents:
     }
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     project_dir = tmp_path / "project"
-    project_dir.mkdir()
+    (project_dir / "skillbench").mkdir(parents=True)
+    (project_dir / "skillbench" / "skillbench.yaml").write_text("", encoding="utf-8")
     monkeypatch.chdir(project_dir)
     return FakeAgents(**agents)
 
@@ -138,8 +139,54 @@ def run_skillbench(*args: str) -> int:
     return main(["run", *args])
 
 
+def skillbench(*args: str) -> int:
+    """Any skillbench command, e.g. skillbench("skill", "--claude")."""
+    return main(list(args))
+
+
+def init_project(defaults: str | None = None) -> Path:
+    """`skillbench init` in the current folder, without the sample tests; returns skillbench/."""
+    assert main(["init"]) == 0
+    project_dir = Path.cwd() / "skillbench"
+    for sample in ("skills/example.yaml", "agent/example.yaml"):
+        (project_dir / sample).unlink()
+    if defaults is not None:
+        (project_dir / "skillbench.yaml").write_text(defaults, encoding="utf-8")
+    return project_dir
+
+
+def runs_dir() -> Path:
+    return Path.cwd() / "skillbench" / "runs"
+
+
+def project_records() -> list[dict]:
+    paths = runs_dir().glob("*/run.json")
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    return sorted(records, key=lambda record: record["start_time"])
+
+
+def write_skill(root: Path, name: str, relative_dir: str = ".claude/skills") -> Path:
+    skill_dir = root / relative_dir / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: test skill {name}\n---\nDo {name}.\n", encoding="utf-8"
+    )
+    return skill_dir
+
+
+def write_plugin(root: Path, plugin_name: str, skill_names: list[str]) -> Path:
+    plugin_dir = root / plugin_name
+    (plugin_dir / ".claude-plugin").mkdir(parents=True)
+    (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": plugin_name}), encoding="utf-8"
+    )
+    for skill_name in skill_names:
+        write_skill(plugin_dir, skill_name, "skills")
+    return plugin_dir
+
+
 def only_run_dir() -> Path:
-    run_dirs = [entry for entry in (Path.cwd() / "runs").iterdir() if entry.is_dir()]
+    run_dirs = [entry for entry in runs_dir().iterdir() if entry.is_dir()]
     assert len(run_dirs) == 1, f"expected exactly one run dir, found {run_dirs}"
     return run_dirs[0]
 

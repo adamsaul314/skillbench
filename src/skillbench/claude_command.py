@@ -35,29 +35,13 @@ def build_session_args(spec: TestSpec, model: str | None, has_api_key: bool) -> 
         args += ["--allowedTools", *spec.allowed_tools]
     if model is not None:
         args += ["--model", model]
-    args += _isolation_args(spec.isolation, has_api_key)
-    args += _skill_dir_args(spec)
-    return args
-
-
-def _isolation_args(isolation: str, has_api_key: bool) -> list[str]:
-    if isolation == "none":
-        return []
+    # Ignore the user's own config: --bare needs an API key; with a subscription login,
+    # keep only project settings and no MCP servers instead.
     if has_api_key:
-        return ["--bare"]
-    # --bare needs an API key; with a subscription login, approximate it instead.
-    return [
-        "--setting-sources",
-        "project",
-        "--strict-mcp-config",
-        "--mcp-config",
-        _EMPTY_MCP_CONFIG,
-    ]
-
-
-def _skill_dir_args(spec: TestSpec) -> list[str]:
-    if spec.skill_dir is None:
-        return []
-    if spec.is_skill_dir_a_plugin:
-        return ["--plugin-dir", str(spec.skill_dir)]
-    return ["--add-dir", str(spec.skill_dir)]
+        args.append("--bare")
+    else:
+        args += ["--setting-sources", "project", "--strict-mcp-config"]
+        args += ["--mcp-config", _EMPTY_MCP_CONFIG]
+    for plugin_dir in spec.plugin_dirs:
+        args += ["--plugin-dir", str(plugin_dir)]
+    return args

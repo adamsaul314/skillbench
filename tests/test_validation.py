@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import run_skillbench, write_test_yaml
+from conftest import run_skillbench, runs_dir, write_test_yaml
 
 
 @pytest.mark.parametrize(
@@ -15,8 +15,8 @@ from conftest import run_skillbench, write_test_yaml
         ({"name": "bad-type", "prompt": "/x", "timeout_s": "ten"}, "timeout_s"),
         ({"name": "bad-bool", "prompt": "/x", "max_turns": True}, "max_turns"),
         ({"name": "bad-list", "prompt": "/x", "denied_tools": "Write"}, "denied_tools"),
-        ({"name": "bad-iso", "prompt": "/x", "isolation": "strict"}, "isolation"),
-        ({"name": "no-dir", "prompt": "/x", "skill_dir": "nowhere"}, "skill_dir"),
+        ({"name": "bad-iso", "prompt": "/x", "isolation": "none"}, "isolation"),
+        ({"name": "old-field", "prompt": "/x", "skill_dir": "x"}, "skill_dir"),
         ({"name": "no-fixture", "prompt": "/x", "fixture": "nowhere"}, "fixture"),
         ({"name": "bad-backend", "prompt": "/x", "backends": ["gpt"]}, "backends"),
     ],
@@ -33,7 +33,7 @@ def test_ac1_8_invalid_yaml_names_file_and_field_and_launches_nothing(
     assert "broken.yaml" in error_output
     assert f"'{field}'" in error_output
     assert not fake_claude.was_launched
-    assert not (Path.cwd() / "runs").exists()
+    assert not runs_dir().exists()
 
 
 def test_ac1_8_unparseable_yaml_names_file_and_launches_nothing(fake_claude, capsys):

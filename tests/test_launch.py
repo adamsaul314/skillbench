@@ -1,4 +1,4 @@
-"""How skillbench launches `claude`: flags, skill visibility, workspace, model, isolation."""
+"""How skillbench launches `claude`: flags, workspace, model, isolation."""
 
 from pathlib import Path
 
@@ -9,13 +9,6 @@ PROMPT = "/overpowered:grilling an idea for a todo app"
 
 def _flag_value(argv: list[str], flag: str) -> str:
     return argv[argv.index(flag) + 1]
-
-
-def _make_plugin_dir(parent: Path) -> Path:
-    plugin_dir = parent / "my-plugin"
-    (plugin_dir / ".claude-plugin").mkdir(parents=True)
-    (plugin_dir / ".claude-plugin" / "plugin.json").write_text('{"name": "my-plugin"}')
-    return plugin_dir
 
 
 def _snapshot_files(root: Path) -> list[tuple[str, bytes]]:
@@ -58,34 +51,6 @@ def test_ac1_1_passes_allowed_tools_when_given(fake_claude):
     run_skillbench(str(test_path))
 
     assert _flag_value(fake_claude.argv, "--allowedTools") == "Read"
-
-
-def test_ac1_1_plugin_skill_dir_is_passed_as_plugin_dir(fake_claude):
-    plugin_dir = _make_plugin_dir(Path.cwd())
-    test_path = write_test_yaml(
-        Path.cwd(), {"name": "plugin", "prompt": PROMPT, "skill_dir": "my-plugin"}
-    )
-
-    run_skillbench(str(test_path))
-
-    argv = fake_claude.argv
-    assert Path(_flag_value(argv, "--plugin-dir")) == plugin_dir.resolve()
-    assert "--add-dir" not in argv
-
-
-def test_ac1_1_plain_skill_dir_is_passed_as_add_dir(fake_claude):
-    skill_dir = Path.cwd() / "skills" / "grilling"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: grilling\n---\n")
-    test_path = write_test_yaml(
-        Path.cwd(), {"name": "skill", "prompt": PROMPT, "skill_dir": "skills/grilling"}
-    )
-
-    run_skillbench(str(test_path))
-
-    argv = fake_claude.argv
-    assert Path(_flag_value(argv, "--add-dir")) == skill_dir.resolve()
-    assert "--plugin-dir" not in argv
 
 
 def test_ac1_1_process_runs_in_a_new_temp_workspace(fake_claude):
@@ -184,14 +149,3 @@ def test_ac1_10_clean_isolation_without_api_key_limits_settings_and_mcp(fake_cla
     assert _flag_value(argv, "--setting-sources") == "project"
     assert "--strict-mcp-config" in argv
     assert _flag_value(argv, "--mcp-config") == '{"mcpServers": {}}'
-
-
-def test_ac1_10_isolation_none_passes_no_isolation_flags(fake_claude, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    test_path = write_test_yaml(Path.cwd(), {"name": "iso", "prompt": PROMPT, "isolation": "none"})
-
-    run_skillbench(str(test_path))
-
-    argv = fake_claude.argv
-    for isolation_flag in ("--bare", "--setting-sources", "--strict-mcp-config", "--mcp-config"):
-        assert isolation_flag not in argv

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_run_record, run_skillbench, write_test_yaml
+from conftest import load_run_record, run_skillbench, runs_dir, write_test_yaml
 
 PROMPT = "/overpowered:grilling an idea for a todo app"
 
@@ -193,7 +193,7 @@ def test_ac2_6_invalid_assertion_is_a_validation_error_and_launches_nothing(
     assert "bad-assert.yaml" in error_output
     assert named in error_output
     assert not fake_claude.was_launched
-    assert not (Path.cwd() / "runs").exists()
+    assert not runs_dir().exists()
 
 
 @pytest.mark.parametrize(
