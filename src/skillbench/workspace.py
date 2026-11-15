@@ -122,3 +122,37 @@ def _git(args: list[str], cwd: Path, doing: str) -> str:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
         raise FixtureError(f"{doing} failed: {detail or f'git exited {completed.returncode}'}")
     return completed.stdout.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    exit_code: int
+    output: str  # stdout then stderr, trimmed to the last `output_tail_chars`
+
+    @property
+    def succeeded(self) -> bool:
+        return self.exit_code == 0
+
+
+def run_shell(
+    command: str, workspace: Path, timeout_s: float, output_tail_chars: int = 2000
+) -> CommandResult:
+    """Run a command through the platform shell (sh on macOS and Linux, cmd on Windows) in the
+    workspace. A command that can't start or runs past the timeout fails with exit code -1."""
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(-1, f"timed out after {timeout_s}s")
+    except OSError as error:
+        return CommandResult(-1, f"could not be run: {error}")
+    output = (completed.stdout + completed.stderr).strip()[-output_tail_chars:]
+    return CommandResult(completed.returncode, output)

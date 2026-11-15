@@ -494,7 +494,23 @@ def _render_item(item: dict[str, Any]) -> str:
     if item["kind"] == "user_message":
         label = f"{item['source'].capitalize()} answer"
         return f'<div class="user"><strong>{escape(label)}:</strong> {escape(item["text"])}</div>'
+    if item["kind"] == "user_command":
+        return _render_user_command(item)
+    if item["kind"] == "new_session":
+        return '<div class="user"><strong>/clear</strong>: a fresh session starts here</div>'
     return f'<div class="unknown">Other event: {escape(item["raw_type"])}</div>'
+
+
+def _render_user_command(item: dict[str, Any]) -> str:
+    """A `!command` answer: run in the workspace by skillbench, between turns."""
+    is_ok = item["exit_code"] == 0
+    outcome = "ok" if is_ok else f"exit {item['exit_code']}"
+    return (
+        '<details class="user-command">'
+        f'<summary><span class="tool">!</span><span class="hint">{escape(item["command"])}</span>'
+        f'<span class="outcome {"ok" if is_ok else "error"}">{outcome}</span></summary>'
+        f"<h4>Output</h4>{_render_long_text(item['output'])}</details>"
+    )
 
 
 def _render_tool_call(tool_call: dict[str, Any]) -> str:

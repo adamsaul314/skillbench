@@ -19,7 +19,7 @@ from skillbench.assertions import Assertion, AssertionResult, RunFacts, evaluate
 from skillbench.claude import TurnInfo, UserMessage
 from skillbench.config import TestSpec
 from skillbench.progress import Progress
-from skillbench.workspace import FixtureError, copy_folder, create_workspace
+from skillbench.workspace import FixtureError, copy_folder, create_workspace, run_shell
 
 _IS_WINDOWS = os.name == "nt"
 _POLL_INTERVAL_S = 0.5
@@ -122,12 +122,18 @@ def _snapshot_plugins(spec: TestSpec, snapshot_dir: Path) -> list[Path]:
 
 # --- the conversation ----------------------------------------------------------------------
 
+# An answer that is exactly this starts a fresh session instead of being sent.
+_CLEAR = "/clear"
+# An answer starting with this runs the rest as a shell command in the workspace.
+_COMMAND_PREFIX = "!"
+
 
 class _StopReason(StrEnum):
     """Why a conversation ended; recorded in run.json as `stop_reason`."""
 
     NO_MORE_ANSWERS = "no_more_answers"
     TURN_FAILED = "turn_failed"
+    COMMAND_FAILED = "command_failed"  # a `!command` answer exited non-zero
     NEEDS_LIVE_ANSWER = "needs_live_answer"
     NO_SESSION_ID = "no_session_id"
     TRIGGER_DECIDED = "trigger_decided"  # a trigger run stopped at the first skill call
@@ -142,6 +148,7 @@ class _Stop:
 
 @dataclass(frozen=True)
 class _Turn:
+    preface: list[dict[str, Any]]  # the user's actions since the last turn: commands, /clear
     user_message: UserMessage | None  # None for the first turn, which sends the test prompt
     outcome: "_ProcessOutcome"
     info: TurnInfo
@@ -151,20 +158,37 @@ class _Turn:
 class _Conversation:
     turns: list[_Turn] = field(default_factory=list)
     stop: _Stop = _Stop(_StopReason.NO_MORE_ANSWERS)
+    pending_actions: list[dict[str, Any]] = field(default_factory=list)  # since the last turn
+    starts_fresh: bool = False  # a /clear came since the last turn
 
     @property
     def session_id(self) -> str | None:
         reported = [turn.info.session_id for turn in self.turns if turn.info.session_id]
         return reported[-1] if reported else None
 
+    @property
+    def session_to_resume(self) -> str | None:
+        return None if self.starts_fresh else self.session_id
+
+    def add_turn(
+        self, user_message: UserMessage | None, outcome: "_ProcessOutcome", info: TurnInfo
+    ) -> None:
+        self.turns.append(_Turn(self.pending_actions, user_message, outcome, info))
+        self.pending_actions = []
+        self.starts_fresh = False
+
 
 class _LiveAnswerUnavailableError(Exception):
     """A live answer is needed but there is no terminal to ask in."""
 
 
+class _CommandFailedError(Exception):
+    """A `!command` answer exited non-zero; the steps after it can't be trusted to work."""
+
+
 def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Path) -> _Conversation:
-    """Send the prompt, then each answer as a follow-up turn in the same session, until the
-    answers run out or a turn fails."""
+    """Send the prompt, then each answer as a follow-up turn, until the answers run out or a
+    turn fails. `/clear` and `!command` answers are carried out between turns."""
     launcher = _TurnLauncher(spec, options, workspace, raw_dir)
     answers = _AnswerSource(spec.answers, spec.is_interactive, options.ask_user)
     conversation = _Conversation()
@@ -172,19 +196,53 @@ def _converse(spec: TestSpec, options: RunOptions, workspace: Path, raw_dir: Pat
     while True:
         message = spec.prompt if user_message is None else user_message.text
         turn_number = len(conversation.turns) + 1
-        outcome, info = launcher.run_turn(turn_number, message, conversation.session_id)
-        conversation.turns.append(_Turn(user_message, outcome, info))
+        outcome, info = launcher.run_turn(turn_number, message, conversation.session_to_resume)
+        conversation.add_turn(user_message, outcome, info)
         stop = _stop_before_next_turn(conversation, answers)
         if stop is not None:
             conversation.stop = stop
             return conversation
+        agent_text = claude.final_text(info.trace["items"]) or ""
         try:
-            user_message = answers.next_answer(claude.final_text(info.trace["items"]))
+            user_message = _next_message(answers, conversation, workspace, agent_text, spec)
         except _LiveAnswerUnavailableError as error:
             conversation.stop = _Stop(_StopReason.NEEDS_LIVE_ANSWER, f"{spec.source_path}: {error}")
             return conversation
+        except _CommandFailedError as error:
+            conversation.stop = _Stop(_StopReason.COMMAND_FAILED, f"{spec.source_path}: {error}")
+            return conversation
         if user_message is None:
             return conversation
+
+
+def _next_message(
+    answers: "_AnswerSource",
+    conversation: _Conversation,
+    workspace: Path,
+    agent_text: str,
+    spec: TestSpec,
+) -> UserMessage | None:
+    """The next message for Claude, after carrying out any `/clear` and `!command` answers that
+    come before it; None when the conversation is over. Raises _CommandFailedError."""
+    shown_to_user = agent_text
+    while (answer := answers.next_answer(shown_to_user)) is not None:
+        if answer.text == _CLEAR:
+            conversation.starts_fresh = True
+            conversation.pending_actions.append({"kind": "new_session"})
+            shown_to_user = "(the next message starts a fresh session)"
+        elif answer.text.startswith(_COMMAND_PREFIX):
+            command = answer.text.removeprefix(_COMMAND_PREFIX).strip()
+            result = run_shell(command, workspace, spec.timeout_s)
+            action = {"kind": "user_command", "command": command, **vars(result)}
+            conversation.pending_actions.append(action)
+            if not result.succeeded:
+                raise _CommandFailedError(
+                    f"'!{command}' exited with code {result.exit_code}: {result.output}"
+                )
+            shown_to_user = f"$ {command}\n{result.output}"
+        else:
+            return answer
+    return None
 
 
 def _stop_before_next_turn(conversation: _Conversation, answers: "_AnswerSource") -> _Stop | None:
@@ -217,11 +275,12 @@ class _AnswerSource:
         """Whether the conversation would continue after this turn."""
         return bool(self._scripted) or self._is_interactive
 
-    def next_answer(self, agent_final_text: str | None) -> UserMessage | None:
-        """The next answer, or None when the conversation is over. Raises
-        _LiveAnswerUnavailableError if the user must be asked but cannot be."""
+    def next_answer(self, shown_to_user: str) -> UserMessage | None:
+        """The next answer, or None when the conversation is over. `shown_to_user` is what a
+        live answerer sees first. Raises _LiveAnswerUnavailableError if the user must be asked
+        but cannot be."""
         if self._scripted:
-            return UserMessage(text=self._scripted.pop(0), source="scripted")
+            return UserMessage(text=self._scripted.pop(0).strip(), source="scripted")
         if not self._is_interactive:
             return None
         if self._ask_user is None:
@@ -229,7 +288,7 @@ class _AnswerSource:
                 "the agent is waiting for an answer but stdin is not a terminal, "
                 "so scripted answers are required (add them under 'answers:')"
             )
-        typed = self._ask_user(agent_final_text or "")
+        typed = self._ask_user(shown_to_user)
         if typed is None or typed.strip() in _END_COMMANDS:
             self._is_interactive = False
             return None
@@ -315,8 +374,9 @@ def _conversation_record(
 ) -> dict[str, Any]:
     first_turn, last_turn = conversation.turns[0], conversation.turns[-1]
     trace = claude.merge_turns(
-        [(turn.user_message, turn.info.trace) for turn in conversation.turns]
+        [(turn.preface, turn.user_message, turn.info.trace) for turn in conversation.turns]
     )
+    trace["items"] += conversation.pending_actions  # actions after the last turn
     facts = RunFacts(
         trace=trace, workspace=workspace, prompt=spec.prompt, loaded_skills=first_turn.info.skills
     )
