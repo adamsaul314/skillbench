@@ -8,11 +8,28 @@ You write a small YAML file that says *"send this to Claude, then check these th
 
 ## 1. Install
 
-You need [uv](https://docs.astral.sh/uv/), git, and Claude Code installed and logged in (check with `claude --version`).
+You need Python 3.11+, git, and Claude Code installed and logged in (check with `claude --version`).
+
+Install from [PyPI](https://pypi.org/project/skillbench-cli/) with **one** of these, whichever you normally use:
+
+| Tool | Command |
+|---|---|
+| pip | `pip install skillbench-cli` |
+| pipx | `pipx install skillbench-cli` |
+| uv | `uv tool install skillbench-cli` |
+
+The package is called `skillbench-cli`, but the command is `skillbench`. Check it worked:
 
 ```
-uv tool install /path/to/skillbench
+$ skillbench --help
+usage: skillbench [-h] {init,skill,agent} ...
+
+    init              create the skillbench/ folder with sample tests
+    skill             run tests in skillbench/skills/
+    agent             run tests in skillbench/agent/
 ```
+
+To upgrade later, run the same tool with its upgrade option, e.g. `pip install -U skillbench-cli`.
 
 ## 2. Try it (2 minutes)
 
